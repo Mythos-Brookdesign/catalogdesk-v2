@@ -51,6 +51,17 @@ async function mockWooCommerce(application: ElectronApplication, key: string, se
         '/wp-json/wc/v3/products/attributes': [{ id: 1, name: 'Farbe', slug: 'pa_farbe', type: 'select', order_by: 'menu_order', has_archives: false }],
         '/wp-json/wc/v3/products/attributes/1/terms': [{ id: 30, name: 'Rot', slug: 'rot', menu_order: 0, count: 4 }, { id: 31, name: 'Blau', slug: 'blau', menu_order: 1, count: 2 }],
       }
+      if (url.pathname === '/wp-json/wc/v3/products' && url.searchParams.get('per_page') === '100') return json([
+        { id: 60, name: 'Hoodie', type: 'variable', status: 'publish', sku: 'HOOD', variations: [61, 62], price_html: '<span class="amount">49,90&nbsp;<span>€</span></span>',
+          categories: [{ id: 4, name: 'Kleidung &amp; Mode', slug: 'kleidung' }], delivery_time: { id: 12, name: '2-3 Werktage', slug: '2-3-werktage', html: '' },
+          attributes: [{ id: 1, name: 'Farbe', options: ['Rot', 'Blau'], variation: true }] },
+        { id: 70, name: 'Socken', type: 'simple', status: 'draft', sku: 'SOCK', price: '9.90', manage_stock: true, stock_quantity: 3, stock_status: 'instock', categories: [{ id: 4, name: 'Kleidung &amp; Mode', slug: 'kleidung' }] },
+      ])
+      if (url.pathname === '/wp-json/wc/v3/data/currencies/current') return json({ code: 'EUR', name: 'Euro', symbol: '€' })
+      if (url.pathname === '/wp-json/wc/v3/products/60/variations') return json([
+        { id: 61, name: 'Hoodie - Rot', status: 'publish', sku: 'HOOD-R', price: '49.90', stock_status: 'instock', attributes: [{ id: 1, name: 'Farbe', option: 'Rot' }] },
+        { id: 62, name: 'Hoodie - Blau', status: 'publish', sku: 'HOOD-B', price: '49.90', stock_status: 'outofstock', attributes: [{ id: 1, name: 'Farbe', option: 'Blau' }] },
+      ])
       if (url.pathname === '/wp-json/wc/v3/products/seasons') return json({ code: 'rest_forbidden' }, 403)
       if (taxonomyRoutes[url.pathname]) return json(taxonomyRoutes[url.pathname])
       return new Response(JSON.stringify([{ id: 1, sku: 'A' }]), { headers: { 'content-type': 'application/json', 'x-wp-total': '25' } })
@@ -213,6 +224,27 @@ test('creates the first admin before showing the app and requires login on the n
     await expect(page.getByText('Aenderungen warten auf Uebertragung')).toHaveCount(0)
     await expect(page.getByRole('cell', { name: '↳ T-Shirts', exact: true })).toBeVisible()
     await expect(page.getByRole('cell', { name: '↳ Hosen', exact: true })).toHaveCount(0)
+
+    await page.getByRole('button', { name: 'Produkte', exact: true }).click()
+    await expect(page.getByRole('heading', { name: 'Noch keine Produkte lokal gespeichert' })).toBeVisible()
+    await page.getByRole('button', { name: 'Produkte importieren', exact: true }).click()
+    await expect(page.getByRole('status').filter({ hasText: 'Produkte importiert' })).toContainText('2 Produkte und 2 Varianten')
+    const productRows = page.locator('.product-row')
+    await expect(productRows).toHaveText([/Hoodie.*HOOD.*Variabel.*49,90\s€.*Veroeffentlicht/, /Hoodie - Blau.*Variante.*49,90\s€.*Nicht vorraetig/, /Hoodie - Rot.*Variante.*Vorraetig/, /Socken.*SOCK.*Einfach.*Vorraetig \(3\).*Entwurf/])
+    await productRows.filter({ hasText: 'Hoodie - Rot' }).click()
+    const inspector = page.getByRole('complementary', { name: 'Produktdetail' })
+    await expect(inspector).toContainText('VARIANTE VON #60')
+    await expect(inspector).toContainText('Farbe')
+    await productRows.filter({ hasText: 'HOOD' }).first().click()
+    await expect(inspector).toContainText('Kleidung & Mode')
+    await expect(inspector).toContainText('2-3 Werktage')
+    await page.screenshot({ path: testInfo.outputPath('products-desktop.png') })
+    await page.getByLabel('Produkttyp').selectOption('variation')
+    await expect(productRows).toHaveCount(2)
+    await page.getByLabel('Produkttyp').selectOption('all')
+    await page.setViewportSize({ width: 600, height: 850 })
+    expect(await page.evaluate(() => document.documentElement.scrollWidth <= document.documentElement.clientWidth)).toBe(true)
+    await page.setViewportSize({ width: 1440, height: 920 })
     await page.setViewportSize({ width: 600, height: 850 })
     expect(await page.evaluate(() => document.documentElement.scrollWidth <= document.documentElement.clientWidth)).toBe(true)
     await page.screenshot({ path: testInfo.outputPath('shop-settings-narrow.png') })
@@ -290,7 +322,7 @@ test('creates the first admin before showing the app and requires login on the n
     await page.getByRole('button', { name: 'Historie', exact: true }).click()
     const history = page.locator('.history-table')
     for (const summary of ['Shopverbindung entfernt', 'Benutzer „Grace Mitarbeiter“ geloescht', 'Benutzer „Grace Hopper“ angelegt', 'Begriff „Hosen“ in Kategorien angelegt',
-      'Begriff „T-Shirts“ in Kategorien geaendert', '2 Taxonomie-Aenderungen an den Shop uebertragen', 'Taxonomien importiert: 7 Taxonomien, 8 Begriffe', 'Shopverbindung gespeichert', 'Farbschema auf Dunkel geaendert', 'Ersten Administrator eingerichtet'])
+      'Begriff „T-Shirts“ in Kategorien geaendert', '2 Taxonomie-Aenderungen an den Shop uebertragen', 'Taxonomien importiert: 7 Taxonomien, 8 Begriffe', 'Produkte importiert: 2 Produkte, 2 Varianten', 'Shopverbindung gespeichert', 'Farbschema auf Dunkel geaendert', 'Ersten Administrator eingerichtet'])
       await expect(history.getByRole('cell', { name: summary, exact: true }).first()).toBeVisible()
     await history.getByRole('button', { name: 'Details: Benutzer „Grace Mitarbeiter“ geaendert' }).click()
     const changeRow = history.locator('.history-changes tr').filter({ hasText: 'Name' }).first()

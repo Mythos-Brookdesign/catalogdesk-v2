@@ -5,6 +5,10 @@ const authListeners = new Set()
 const taxonomyProgressListeners = new Set()
 const taxonomyChangeListeners = new Set()
 const auditListeners = new Set()
+const productProgressListeners = new Set()
+ipcRenderer.on('catalog:v2:products-progress', (_event, progress) => {
+  for (const listener of productProgressListeners) listener(progress)
+})
 ipcRenderer.on('catalog:v2:audit-appended', () => {
   for (const listener of auditListeners) listener()
 })
@@ -50,6 +54,8 @@ contextBridge.exposeInMainWorld('catalogDesk', {
   },
   workspaceSummary: () => authorized('catalog:v2:workspace-summary'),
   listProducts: (query) => authorized('catalog:v2:products-list', query),
+  importProducts: () => authorized('catalog:v2:products-import'),
+  onProductImportProgress: (listener) => { productProgressListeners.add(listener); return () => productProgressListeners.delete(listener) },
   importTaxonomies: () => authorized('catalog:v2:taxonomies-import'),
   taxonomyOverview: () => authorized('catalog:v2:taxonomies-overview'),
   listTaxonomyTerms: (query) => authorized('catalog:v2:taxonomies-terms', query),

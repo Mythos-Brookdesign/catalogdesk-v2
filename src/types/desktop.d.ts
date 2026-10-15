@@ -9,7 +9,9 @@ export type LocalProduct = {
   name: string
   status: string
   syncState: SyncState
+  productType: string
   payload: Record<string, unknown>
+  terms: { taxonomy: string; label: string; name: string }[]
 }
 
 export type WorkspaceSummary = {
@@ -25,7 +27,7 @@ export type WorkspaceSummary = {
 export type ProductQuery = {
   shopUrl?: string
   query?: string
-  type?: 'all' | ProductType
+  type?: string
   page?: number
   pageSize?: number
 }
@@ -35,6 +37,7 @@ export type ProductPage = {
   total: number
   page: number
   pageSize: number
+  currency?: string | null
 }
 
 export type CatalogUser = {
@@ -69,6 +72,7 @@ export type AdminProfile = {
 export type ShopConnectionInput = { url: string; consumerKey: string; consumerSecret: string }
 export type ShopConnectionCheck = { url: string; productCount: number; checkedAt: string }
 export type Theme = 'light' | 'dark'
+export type ProductImportProgress = { step: 'taxonomies' | 'products' | 'variations' | 'saving'; label: string; completed: number; total: number }
 export type TaxonomyKind = 'core' | 'custom' | 'attribute'
 export type TaxonomySummary = {
   taxonomy: string
@@ -131,6 +135,8 @@ declare global {
       logout: () => Promise<boolean>
       workspaceSummary: () => Promise<WorkspaceSummary>
       listProducts: (query?: ProductQuery) => Promise<ProductPage>
+      importProducts: () => Promise<UserResult<WorkspaceSummary & { relations: number; unresolved: number }>>
+      onProductImportProgress: (listener: (progress: ProductImportProgress) => void) => () => void
       importTaxonomies: () => Promise<UserResult<TaxonomyOverview>>
       taxonomyOverview: () => Promise<UserResult<TaxonomyOverview>>
       listTaxonomyTerms: (query: TaxonomyTermQuery) => Promise<UserResult<TaxonomyTermPage>>

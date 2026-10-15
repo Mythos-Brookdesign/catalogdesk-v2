@@ -8,6 +8,7 @@ const { createShopStore } = require('./shop-store.cjs')
 const { WooError, resolveConnection, testConnection } = require('./shop.cjs')
 const { importTaxonomies } = require('./taxonomies.cjs')
 const { syncTaxonomyChanges } = require('./taxonomy-sync.cjs')
+const { importProducts } = require('./products.cjs')
 
 const development = !app.isPackaged && process.argv.includes('--dev')
 const entryUrl = development ? 'http://127.0.0.1:5179/' : 'catalog://app/index.html'
@@ -339,6 +340,49 @@ app.whenReady().then(async () => {
     if (user.role !== 'admin' && !user.permissions.some((entry) => ['dashboard', 'products'].includes(entry)))
       throw new Error('Fuer diesen Bereich fehlt die erforderliche Berechtigung.')
     return database.request('workspaceSummary')
+  })
+  // Full shop import: queued term edits first, then taxonomies (so every product relation can be resolved),
+  // then all products and their variations. The local catalog is replaced in one transaction at the end.
+  ipcMain.handle('catalog:v2:products-import', async (event, envelope) => {
+    let acquired = false
+    let user = null
+    let shopUrl = null
+    const progress = (value) => {
+      // Keeps the session alive during long imports and stops them when the session ends.
+      authorize(event, envelope, 'products')
+      if (!event.sender.isDestroyed()) event.sender.send('catalog:v2:products-progress', value)
+    }
+    try {
+      user = authorize(event, envelope, 'products').user
+      if (shopOperationRunning) return { ok: false, error: 'Eine Shopaktion laeuft bereits.' }
+      shopOperationRunning = true
+      acquired = true
+      const connection = await shopStore.load()
+      if (!connection) return { ok: false, error: 'Keine Shopverbindung gespeichert. Bitte zuerst unter Shopverbindung einrichten.' }
+      shopUrl = connection.url
+      const started = Date.now()
+      progress({ step: 'taxonomies', label: 'Taxonomien werden aktualisiert ...', completed: 0, total: 1 })
+      auditSync((await syncTaxonomyChanges(connection, databaseCall, shopFetch)).changes, user, connection.url)
+      const taxonomies = await importTaxonomies(connection, shopFetch, (value) => progress({ step: 'taxonomies', label: `Taxonomien: ${value.label}`, completed: value.completed, total: value.total }))
+      await databaseCall('replaceTaxonomies', taxonomies)
+      const catalog = await importProducts(connection, shopFetch, progress)
+      progress({ step: 'saving', label: 'Katalog wird gespeichert ...', completed: 1, total: 1 })
+      authorize(event, envelope, 'products')
+      const summary = await databaseCall('replaceCatalog', catalog)
+      const termCount = taxonomies.taxonomies.reduce((sum, entry) => sum + entry.terms.length, 0)
+      const parents = summary.products - summary.variations
+      void audit(user, { category: 'catalog', action: 'catalog.import', shopUrl: catalog.shopUrl, targetType: 'shop', targetLabel: catalog.shopUrl,
+        summary: `Produkte importiert: ${parents} Produkte, ${summary.variations} Varianten`,
+        details: { products: parents, variable: summary.variable, variations: summary.variations, relations: summary.relations, unresolvedRelations: summary.unresolved,
+          taxonomies: `${taxonomies.taxonomies.length} Taxonomien, ${termCount} Begriffe aktualisiert`, duration: `${Math.round((Date.now() - started) / 1000)} s` } })
+      return { ok: true, value: summary }
+    } catch (error) {
+      const message = safeTaxonomyError(error) ? error.message : 'Produkte konnten nicht importiert werden.'
+      if (user && acquired) void audit(user, { category: 'catalog', action: 'catalog.import', summary: 'Produktimport fehlgeschlagen', outcome: 'failure', shopUrl, targetType: 'shop', targetLabel: shopUrl, details: { error: message } })
+      return { ok: false, error: message }
+    } finally {
+      if (acquired) shopOperationRunning = false
+    }
   })
   ipcMain.handle('catalog:v2:products-list', async (event, envelope) => {
     const { payload } = authorize(event, envelope, 'products')

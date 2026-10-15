@@ -29,6 +29,19 @@ Shop Connection provides the connection form with an HTTPS shop URL, Consumer Ke
 
 The read-only connection test sends one GET request to `wc/v3/products` with a 15-second timeout and 64-KB response bound, and refuses redirects. Testing does not save changes automatically: use Save Connection explicitly. Blank key fields preserve existing keys only for the same normalized shop URL; a different URL requires both new keys. Removing the connection requires confirmation and leaves catalog data unchanged. Shop import and synchronization are not part of this step.
 
+## Product Import
+
+Products > *Import products* loads the complete catalog from the connected WooCommerce shop (permission Products). One run:
+
+1. sends queued taxonomy edits, then re-imports all taxonomies so every product relation can be resolved,
+2. loads all products (`wc/v3/products`, 100 per page, `status=any`, i.e. everything except trash; 60-second timeout and 32-MB bound per page),
+3. loads the variations of every variable product (4 requests in parallel) and the shop currency,
+4. replaces the shop's local catalog in one SQLite transaction (nothing changes if any step fails).
+
+Products keep their complete REST object as payload, their family role (`type`: simple/variable/variation) and WooCommerce's own type (`product_type`: simple, variable, grouped, external, or plugin types; schema v10). Term relations are found generically: every product field holding `{ id, name, slug }` objects (categories, tags, brands, Germanized delivery time/manufacturer/unit/price labels, other plugins) is resolved to its taxonomy by term ID, which WordPress keeps unique across taxonomies; shipping classes come from `shipping_class_id`, and global attribute options are matched to their `pa_*` terms by name or slug. Relations to taxonomies the shop does not expose are counted as unresolved and kept only in the payload.
+
+The list shows each variable product followed by its variations, with SKU, type, price (the shop's `price_html`, or the stored shop currency for variations), stock and WooCommerce status, plus search, type filter and paging. The detail panel lists all assigned terms grouped by taxonomy. Progress is shown while importing; the import is recorded in History. The import is read-only for the shop.
+
 ## Taxonomies
 
 Taxonomies imports every product taxonomy the shop exposes, without a fixed list, so plugin and custom taxonomies are included:

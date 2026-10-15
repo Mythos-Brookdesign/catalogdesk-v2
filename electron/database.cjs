@@ -11,28 +11,32 @@ const shopUrlSchema = z.string().url().max(2048).refine((value) => {
 const searchSchema = z.object({
   shopUrl: shopUrlSchema.optional(),
   query: z.string().trim().max(200).default(''),
-  type: z.enum(['all', 'simple', 'variable', 'variation']).default('all'),
+  type: z.string().regex(/^[a-z0-9_-]{1,40}$/).default('all'),
   page: z.number().int().min(0).max(1_000_000).default(0),
   pageSize: z.number().int().min(1).max(100).default(50),
 }).strict()
+const productTermSchema = z.union([
+  z.object({ field: z.string().max(80), id: z.number().int().positive(), name: z.string().max(1000), slug: z.string().max(1000) }).strict(),
+  z.object({ field: z.literal('attribute'), attributeId: z.number().int().positive(), option: z.string().max(1000) }).strict(),
+])
 const catalogSchema = z.object({
   shopUrl: shopUrlSchema,
   importedAt: z.string().datetime(),
+  currency: z.string().regex(/^[A-Z]{3}$/).nullable().default(null),
   products: z.array(z.object({
     id: z.number().int().positive(),
     parentId: z.number().int().positive().nullable(),
     type: z.enum(['simple', 'variable', 'variation']),
-    sku: z.string().max(255),
+    productType: z.string().regex(/^[a-z0-9_-]{1,80}$/).optional(),
+    sku: z.string().max(1000),
     name: z.string().max(1000),
     status: z.string().max(80),
     payload: z.record(z.string(), z.unknown()),
-    taxonomies: z.object({
-      categories: z.array(z.object({ id: z.number().int().positive(), name: z.string(), slug: z.string() }).strict()).max(1000),
-      tags: z.array(z.object({ id: z.number().int().positive(), name: z.string(), slug: z.string() }).strict()).max(1000),
-      brands: z.array(z.object({ id: z.number().int().positive(), name: z.string(), slug: z.string() }).strict()).max(1000),
-    }).strict(),
-  }).strict()).min(1).max(50_000),
+    terms: z.array(productTermSchema).max(5000).default([]),
+  }).strict()).min(1).max(100_000),
 }).strict()
+// Product fields that name their taxonomy; all other term fields are resolved by term ID.
+const coreTermFields = { categories: 'product_cat', tags: 'product_tag', brands: 'product_brand', shipping_class: 'product_shipping_class' }
 const taxonomyImportSchema = z.object({
   shopUrl: shopUrlSchema,
   importedAt: z.string().datetime(),
@@ -131,7 +135,7 @@ function openDatabase(filename) {
     database.exec('PRAGMA busy_timeout = 5000; PRAGMA foreign_keys = ON; PRAGMA journal_mode = WAL; PRAGMA synchronous = FULL;')
     database.exec('BEGIN IMMEDIATE')
     const version = database.prepare('PRAGMA user_version').get().user_version
-    if (version > 9) throw new Error('Database schema is newer than this app.')
+    if (version > 10) throw new Error('Database schema is newer than this app.')
     if (version < 1) {
       database.exec(`
         CREATE TABLE shops (
@@ -333,6 +337,17 @@ function openDatabase(filename) {
         CREATE TRIGGER IF NOT EXISTS audit_log_no_delete BEFORE DELETE ON audit_log BEGIN SELECT RAISE(ABORT, 'audit log is append-only'); END;
         PRAGMA user_version = 9;`)
     }
+    if (version < 10) {
+      // `type` keeps the family role (simple/variable/variation); product_type is WooCommerce's own type
+      // (grouped, external, bundles, subscriptions, ...).
+      if (!database.prepare('PRAGMA table_info(products)').all().some((column) => column.name === 'product_type'))
+        database.exec("ALTER TABLE products ADD COLUMN product_type TEXT NOT NULL DEFAULT 'simple'")
+      if (!database.prepare('PRAGMA table_info(shops)').all().some((column) => column.name === 'currency'))
+        database.exec('ALTER TABLE shops ADD COLUMN currency TEXT')
+      database.exec(`UPDATE products SET product_type = type WHERE product_type = 'simple' AND type != 'simple';
+        CREATE INDEX IF NOT EXISTS products_type ON products(shop_url, product_type);
+        PRAGMA user_version = 10;`)
+    }
     database.exec('COMMIT')
   } catch (error) {
     if (database.isTransaction) database.exec('ROLLBACK')
@@ -523,18 +538,30 @@ function openDatabase(filename) {
     listProducts(input = {}) {
       const parsed = searchSchema.parse(input)
       const shopUrl = parsed.shopUrl ?? database.prepare(`SELECT shop_url FROM shops WHERE ${catalogShop} ORDER BY imported_at DESC LIMIT 1`).get()?.shop_url
-      if (!shopUrl) return { products: [], total: 0, page: parsed.page, pageSize: parsed.pageSize }
-      const where = ['shop_url = ?']
+      if (!shopUrl) return { products: [], total: 0, page: parsed.page, pageSize: parsed.pageSize, currency: null }
+      const currency = database.prepare('SELECT currency FROM shops WHERE shop_url = ?').get(shopUrl)?.currency ?? null
+      const where = ['p.shop_url = ?']
       const values = [shopUrl]
-      if (parsed.type !== 'all') { where.push('type = ?'); values.push(parsed.type) }
+      if (parsed.type !== 'all') { where.push('p.product_type = ?'); values.push(parsed.type) }
       if (parsed.query) {
-        where.push('(sku LIKE ? ESCAPE \'\\\' OR name LIKE ? ESCAPE \'\\\')')
-        values.push(`%${parsed.query.replace(/[\\%_]/g, '\\$&')}%`, `%${parsed.query.replace(/[\\%_]/g, '\\$&')}%`)
+        const like = `%${parsed.query.replace(/[\\%_]/g, '\\$&')}%`
+        where.push(`(p.sku LIKE ? ESCAPE '\\' OR p.name LIKE ? ESCAPE '\\')`)
+        values.push(like, like)
       }
       const whereSql = where.join(' AND ')
-      const total = database.prepare(`SELECT COUNT(*) AS total FROM products WHERE ${whereSql}`).get(...values).total
-      const products = database.prepare(`SELECT product_id AS id, parent_id AS parentId, type, sku, name, status, sync_state AS syncState, payload FROM products WHERE ${whereSql} ORDER BY name COLLATE NOCASE, product_id LIMIT ? OFFSET ?`).all(...values, parsed.pageSize, parsed.page * parsed.pageSize).map((row) => ({ ...row, payload: JSON.parse(row.payload) }))
-      return { products, total, page: parsed.page, pageSize: parsed.pageSize }
+      const from = 'FROM products p LEFT JOIN products parent ON parent.shop_url = p.shop_url AND parent.product_id = p.parent_id'
+      const total = database.prepare(`SELECT COUNT(*) AS total ${from} WHERE ${whereSql}`).get(...values).total
+      // Families stay together: each variable product is followed by its variations.
+      const products = database.prepare(`SELECT p.product_id AS id, p.parent_id AS parentId, p.type, p.product_type AS productType, p.sku, p.name, p.status, p.sync_state AS syncState, p.payload,
+          (SELECT json_group_array(json_object('taxonomy', r.taxonomy, 'label', coalesce(tx.label, r.taxonomy), 'name', t.name))
+            FROM product_taxonomies r JOIN taxonomy_terms t ON t.shop_url = r.shop_url AND t.taxonomy = r.taxonomy AND t.term_id = r.term_id
+            LEFT JOIN taxonomies tx ON tx.shop_url = r.shop_url AND tx.taxonomy = r.taxonomy
+            WHERE r.shop_url = p.shop_url AND r.product_id = p.product_id) AS terms
+        ${from} WHERE ${whereSql}
+        ORDER BY coalesce(parent.name, p.name) COLLATE NOCASE, coalesce(p.parent_id, p.product_id), p.parent_id IS NOT NULL, p.name COLLATE NOCASE, p.product_id
+        LIMIT ? OFFSET ?`).all(...values, parsed.pageSize, parsed.page * parsed.pageSize)
+        .map((row) => ({ ...row, payload: JSON.parse(row.payload), terms: JSON.parse(row.terms) }))
+      return { products, total, page: parsed.page, pageSize: parsed.pageSize, currency }
     },
     replaceCatalog(input) {
       const parsed = catalogSchema.parse(input)
@@ -543,26 +570,50 @@ function openDatabase(filename) {
         if (ids.has(product.id)) throw new Error('Duplicate WooCommerce product ID.')
         ids.add(product.id)
       }
+      const stats = { relations: 0, unresolved: 0 }
       database.exec('BEGIN IMMEDIATE')
       try {
-        database.prepare('INSERT INTO shops (shop_url, imported_at) VALUES (?, ?) ON CONFLICT(shop_url) DO UPDATE SET imported_at = excluded.imported_at').run(parsed.shopUrl, parsed.importedAt)
+        database.prepare('INSERT INTO shops (shop_url, imported_at, currency) VALUES (?, ?, ?) ON CONFLICT(shop_url) DO UPDATE SET imported_at = excluded.imported_at, currency = coalesce(excluded.currency, shops.currency)').run(parsed.shopUrl, parsed.importedAt, parsed.currency)
         database.prepare('DELETE FROM products WHERE shop_url = ?').run(parsed.shopUrl)
-        const insertProduct = database.prepare('INSERT INTO products (shop_url, product_id, parent_id, type, sku, name, status, payload) VALUES (?, ?, ?, ?, ?, ?, ?, ?)')
-        const insertTerm = database.prepare('INSERT INTO taxonomy_terms (shop_url, taxonomy, term_id, name, slug, payload) VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT(shop_url, taxonomy, term_id) DO UPDATE SET name = excluded.name, slug = excluded.slug')
-        const insertRelation = database.prepare('INSERT INTO product_taxonomies (shop_url, product_id, taxonomy, term_id) VALUES (?, ?, ?, ?)')
+        // Lookups for term resolution: by term ID (unique across WordPress taxonomies) and by attribute option.
+        const byId = new Map()
+        for (const term of database.prepare('SELECT taxonomy, term_id AS id, slug FROM taxonomy_terms WHERE shop_url = ?').all(parsed.shopUrl)) {
+          if (!byId.has(term.id)) byId.set(term.id, [])
+          byId.get(term.id).push(term)
+        }
+        const attributeTaxonomy = new Map(database.prepare("SELECT taxonomy, json_extract(attribute, '$.id') AS id FROM taxonomies WHERE shop_url = ? AND kind = 'attribute'").all(parsed.shopUrl).map((row) => [row.id, row.taxonomy]))
+        const attributeTerms = new Map()
+        for (const term of database.prepare("SELECT taxonomy, term_id AS id, name, slug FROM taxonomy_terms WHERE shop_url = ? AND substr(taxonomy, 1, 3) = 'pa_'").all(parsed.shopUrl)) {
+          attributeTerms.set(`${term.taxonomy}\u0000${term.name.toLowerCase()}`, term.id)
+          attributeTerms.set(`${term.taxonomy}\u0000${term.slug.toLowerCase()}`, term.id)
+        }
+        const insertProduct = database.prepare('INSERT INTO products (shop_url, product_id, parent_id, type, product_type, sku, name, status, payload) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)')
+        const insertTerm = database.prepare('INSERT INTO taxonomy_terms (shop_url, taxonomy, term_id, name, slug, payload) VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT(shop_url, taxonomy, term_id) DO NOTHING')
+        const insertRelation = database.prepare('INSERT INTO product_taxonomies (shop_url, product_id, taxonomy, term_id) VALUES (?, ?, ?, ?) ON CONFLICT DO NOTHING')
         const insertAttribute = database.prepare('INSERT INTO product_attributes (shop_url, product_id, attribute_position, attribute_id, name, slug, variation, options) VALUES (?, ?, ?, ?, ?, ?, ?, ?)')
         for (const product of parsed.products) {
-          insertProduct.run(parsed.shopUrl, product.id, product.parentId, product.type, product.sku, product.name, product.status, JSON.stringify(product.payload))
-          for (const taxonomy of ['categories', 'tags', 'brands']) {
-            const taxonomyName = taxonomy === 'categories' ? 'product_cat' : taxonomy === 'tags' ? 'product_tag' : 'product_brand'
-            for (const term of product.taxonomies[taxonomy]) {
-              insertTerm.run(parsed.shopUrl, taxonomyName, term.id, term.name, term.slug, JSON.stringify(term))
-              insertRelation.run(parsed.shopUrl, product.id, taxonomyName, term.id)
+          insertProduct.run(parsed.shopUrl, product.id, product.parentId, product.type, product.productType ?? product.type, product.sku, product.name, product.status, JSON.stringify(product.payload))
+          for (const term of product.terms) {
+            let taxonomy = null
+            let termId = null
+            if (term.field === 'attribute') {
+              taxonomy = attributeTaxonomy.get(term.attributeId) ?? null
+              termId = taxonomy ? attributeTerms.get(`${taxonomy}\u0000${term.option.toLowerCase()}`) ?? null : null
+            } else {
+              termId = term.id
+              const known = byId.get(term.id) ?? []
+              taxonomy = coreTermFields[term.field] ?? (known.find((entry) => entry.slug === term.slug) ?? known[0])?.taxonomy ?? null
+              // Core taxonomies are always known; keep the relation even if their terms were not imported yet.
+              if (taxonomy && coreTermFields[term.field] && !known.some((entry) => entry.taxonomy === taxonomy))
+                insertTerm.run(parsed.shopUrl, taxonomy, term.id, term.name, term.slug, JSON.stringify({ id: term.id, name: term.name, slug: term.slug }))
             }
+            if (!taxonomy || !termId) { stats.unresolved++; continue }
+            if (insertRelation.run(parsed.shopUrl, product.id, taxonomy, termId).changes) stats.relations++
           }
           for (const [position, attribute] of (Array.isArray(product.payload.attributes) ? product.payload.attributes : []).entries()) {
             if (!attribute || typeof attribute.name !== 'string') continue
-            insertAttribute.run(parsed.shopUrl, product.id, position, Number.isSafeInteger(attribute.id) ? attribute.id : null, attribute.name, typeof attribute.slug === 'string' ? attribute.slug : null, attribute.variation === true ? 1 : 0, JSON.stringify(Array.isArray(attribute.options) ? attribute.options : []))
+            const options = Array.isArray(attribute.options) ? attribute.options : typeof attribute.option === 'string' ? [attribute.option] : []
+            insertAttribute.run(parsed.shopUrl, product.id, position, Number.isSafeInteger(attribute.id) ? attribute.id : null, attribute.name, typeof attribute.slug === 'string' ? attribute.slug : null, attribute.variation === true ? 1 : 0, JSON.stringify(options))
           }
         }
         database.exec('COMMIT')
@@ -570,7 +621,7 @@ function openDatabase(filename) {
         if (database.isTransaction) database.exec('ROLLBACK')
         throw error
       }
-      return this.workspaceSummary()
+      return { ...this.workspaceSummary(), ...stats }
     },
     replaceTaxonomies(input) {
       const parsed = taxonomyImportSchema.parse(input)

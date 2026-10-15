@@ -50,7 +50,7 @@ it('opens the new product-first schema with an empty local workspace', () => {
   const database = databaseModule.openDatabase(path.join(directory, 'catalogdesk-v2.sqlite'))
   try {
     expect(database.workspaceSummary()).toEqual({ shopCount: 0, latestShopUrl: null, latestImportedAt: null, products: 0, simple: 0, variable: 0, variations: 0 })
-    expect(database.listProducts()).toEqual({ products: [], total: 0, page: 0, pageSize: 50 })
+    expect(database.listProducts()).toEqual({ products: [], total: 0, page: 0, pageSize: 50, currency: null })
   } finally {
     database.close()
   }
@@ -73,11 +73,7 @@ it('stores product families, variations and taxonomy relations atomically', () =
           name: 'T-Shirt',
           status: 'publish',
           payload: { id: 20, attributes: [{ name: 'Size', options: ['S', 'M'] }] },
-          taxonomies: {
-            categories: [{ id: 4, name: 'Clothing', slug: 'clothing' }],
-            tags: [],
-            brands: [{ id: 9, name: 'Studio', slug: 'studio' }],
-          },
+          terms: [{ field: 'categories', id: 4, name: 'Clothing', slug: 'clothing' }, { field: 'brands', id: 9, name: 'Studio', slug: 'studio' }],
         },
         {
           id: 21,
@@ -87,7 +83,7 @@ it('stores product families, variations and taxonomy relations atomically', () =
           name: 'T-Shirt / S',
           status: 'publish',
           payload: { id: 21, parent_id: 20, attributes: [{ name: 'Size', option: 'S' }] },
-          taxonomies: { categories: [], tags: [], brands: [] },
+          terms: [],
         },
         {
           id: 22,
@@ -97,7 +93,7 @@ it('stores product families, variations and taxonomy relations atomically', () =
           name: 'T-Shirt / M',
           status: 'publish',
           payload: { id: 22, parent_id: 20, attributes: [{ name: 'Size', option: 'M' }] },
-          taxonomies: { categories: [], tags: [], brands: [] },
+          terms: [],
         },
       ],
     })
@@ -197,7 +193,7 @@ it('replaces imported taxonomies, keeps tree order and removes vanished terms wi
     database.replaceCatalog({
       shopUrl: 'https://shop.example/', importedAt: new Date().toISOString(),
       products: [{ id: 20, parentId: null, type: 'simple', sku: 'TEE', name: 'T-Shirt', status: 'publish', payload: { id: 20 },
-        taxonomies: { categories: [{ id: 5, name: 'Shirts', slug: 'shirts' }], tags: [], brands: [] } }],
+        terms: [{ field: 'categories', id: 5, name: 'Shirts', slug: 'shirts' }] }],
     })
     expect(database.workspaceSummary().shopCount).toBe(1)
     expect(database.listTaxonomyTerms({ taxonomy: 'product_cat', query: 'Shirts' }).terms[0]).toMatchObject({ parentId: 4, count: 5 })
