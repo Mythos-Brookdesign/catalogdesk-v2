@@ -81,7 +81,7 @@ async function mockWooCommerce(application: ElectronApplication, key: string, se
       if (url.pathname === '/wp-json/wc/v3/products' && url.searchParams.get('per_page') === '100') return json([products[60], products[70]])
       if (url.pathname === '/wp-json/wc/v3/data/currencies/current') return json({ code: 'EUR', name: 'Euro', symbol: '€' })
       if (url.pathname === '/wp-json/wc/v3/products/60/variations') return json([
-        { id: 61, name: 'Hoodie - Rot', status: 'publish', sku: 'HOOD-R', price: '49.90', stock_status: 'instock', attributes: [{ id: 1, name: 'Farbe', option: 'Rot' }] },
+        { id: 61, name: 'Hoodie - Rot', status: 'publish', sku: 'HOOD-R', price: '39.90', regular_price: '49.90', sale_price: '39.90', on_sale: true, stock_status: 'instock', attributes: [{ id: 1, name: 'Farbe', option: 'Rot' }] },
         { id: 62, name: 'Hoodie - Blau', status: 'publish', sku: 'HOOD-B', price: '49.90', stock_status: 'outofstock', attributes: [{ id: 1, name: 'Farbe', option: 'Blau' }] },
       ])
       if (url.pathname === '/wp-json/wc/v3/products/seasons') return json({ code: 'rest_forbidden' }, 403)
@@ -252,7 +252,7 @@ test('creates the first admin before showing the app and requires login on the n
     await page.getByRole('button', { name: 'Produkte importieren', exact: true }).click()
     await expect(page.getByRole('status').filter({ hasText: 'Produkte importiert' })).toContainText('2 Produkte und 2 Varianten')
     const productRows = page.locator('.product-row')
-    await expect(productRows).toHaveText([/Hoodie.*HOOD.*Variabel.*49,90\s€.*Veroeffentlicht/, /Hoodie - Blau.*Variante.*49,90\s€.*Nicht vorraetig/, /Hoodie - Rot.*Variante.*Vorraetig/, /Socken.*SOCK.*Einfach.*Vorraetig \(3\).*Entwurf/])
+    await expect(productRows).toHaveText([/Hoodie.*HOOD.*Variabel.*39,90\s€ – 49,90\s€.*Veroeffentlicht/, /Hoodie - Blau.*Variante.*49,90\s€.*Nicht vorraetig/, /Hoodie - Rot.*Variante.*49,90\s€39,90\s€.*Vorraetig/, /Socken.*SOCK.*Einfach.*Vorraetig \(3\).*Entwurf/])
     await productRows.filter({ hasText: 'Hoodie - Rot' }).click()
     const inspector = page.getByRole('complementary', { name: 'Produktdetail' })
     await expect(inspector).toContainText('VARIANTE VON #60')
@@ -280,6 +280,7 @@ test('creates the first admin before showing the app and requires login on the n
 
     await application.evaluate(() => { (globalThis as { catalogOffline?: boolean }).catalogOffline = true })
     await page.screenshot({ path: testInfo.outputPath('products-edit-icons.png') })
+    await expect(productRows.filter({ hasText: 'Hoodie - Rot' }).locator('del')).toHaveText('49,90\u00a0€')
     await page.getByRole('button', { name: 'Bearbeiten: Socken', exact: true }).click()
     editor = page.getByRole('dialog')
     await expect(editor.getByLabel('Name', { exact: true })).toHaveValue('Socken')

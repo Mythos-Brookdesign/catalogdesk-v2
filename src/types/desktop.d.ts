@@ -12,6 +12,7 @@ export type LocalProduct = {
   productType: string
   payload: Record<string, unknown>
   terms: { taxonomy: string; label: string; name: string }[]
+  priceRange: [number, number] | null
   changeState: 'pending' | 'failed' | 'conflict' | null
   changeError: string | null
   changes: Record<string, unknown> | null

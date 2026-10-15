@@ -1,12 +1,20 @@
 import { useCallback, useEffect, useState } from 'react'
 import { Boxes, ChevronDown, ChevronLeft, ChevronRight, CloudOff, DownloadCloud, LoaderCircle, Pencil, RefreshCw, Search, SlidersHorizontal, Undo2, X } from 'lucide-react'
-import { displayPrice, productFieldLabels, productFieldValue, productStatusLabels, productStock, productTypeLabels, type ProductPage, type ProductSummary } from './model'
+import { productFieldLabels, productPrice, productFieldValue, productStatusLabels, productStock, productTypeLabels, type ProductPage, type ProductSummary } from './model'
 import type { ProductChangeResult, ProductEditorOptions, ProductImportProgress, WorkspaceSummary } from '../../types/desktop'
 import { ProductEditor } from './ProductEditor'
 import { useNotify } from '../../components/notifications/notifications'
 import './ProductsPage.css'
 
 type DesktopApi = NonNullable<Window['catalogDesk']>
+
+function Price({ product, currency }: { product: ProductSummary; currency?: string | null }) {
+  const price = productPrice(product, currency)
+  if (price.kind === 'none') return <span className="price-empty">—</span>
+  if (price.kind === 'range') return <span className="price-range">{price.min} – {price.max}</span>
+  if (price.kind === 'sale') return <span className="price-sale"><del aria-label={`Regulaerer Preis ${price.regular}`}>{price.regular}</del><strong aria-label={`Angebotspreis ${price.sale}`}>{price.sale}</strong></span>
+  return <span>{price.price}</span>
+}
 const pageSize = 50
 
 export function ProductsPage({ desktop }: { desktop?: DesktopApi }) {
@@ -207,7 +215,7 @@ export function ProductsPage({ desktop }: { desktop?: DesktopApi }) {
                 <span className="product-name">{product.parentId ? <span className="product-branch">↳</span> : <Boxes size={17} />}<button className="product-name-button" aria-pressed={selectedId === product.id} onClick={(event) => { event.stopPropagation(); select(product) }}>{product.name || 'Unbenanntes Produkt'}</button>{stateLabel(product) && <span className={`term-state ${product.changeState === 'pending' ? 'update' : 'failed'}`}>{stateLabel(product)}</span>}</span>
                 <span className="product-sku">{product.sku || '—'}</span>
                 <span className="product-type">{productTypeLabels[product.productType] ?? product.productType}</span>
-                <span className="product-price">{displayPrice(product, page.currency)}</span>
+                <span className="product-price"><Price product={product} currency={page.currency} /></span>
                 <span className="product-stock">{productStock(product.payload)}</span>
                 <span className={`product-status ${product.status}`}>{productStatusLabels[product.status] ?? product.status}</span>
                 <span className="product-edit">
@@ -261,7 +269,7 @@ export function ProductsPage({ desktop }: { desktop?: DesktopApi }) {
           <dt>SKU</dt><dd>{selected.sku || '—'}</dd>
           <dt>Typ</dt><dd>{productTypeLabels[selected.productType] ?? selected.productType}</dd>
           <dt>Status</dt><dd>{productStatusLabels[selected.status] ?? selected.status}</dd>
-          <dt>Preis</dt><dd>{displayPrice(selected, page?.currency)}</dd>
+          <dt>Preis</dt><dd><Price product={selected} currency={page?.currency} /></dd>
           <dt>Lager</dt><dd>{productStock(selected.payload)}</dd>
           {Object.entries(selected.terms.reduce<Record<string, string[]>>((groups, term) => ({ ...groups, [term.label]: [...(groups[term.label] ?? []), term.name] }), {}))
             .map(([label, names]) => <div key={label} className="product-inspector-term"><dt>{label}</dt><dd>{names.join(', ')}</dd></div>)}

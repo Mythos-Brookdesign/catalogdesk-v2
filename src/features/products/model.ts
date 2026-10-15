@@ -10,16 +10,32 @@ export const stockLabels: Record<string, string> = { instock: 'Vorraetig', outof
 
 const text = (value: unknown) => (typeof value === 'string' ? value : '')
 
-// price_html carries the shop's own currency formatting; only its text is used, never the markup.
-export function productPrice(payload: Record<string, unknown>, currency?: string | null) {
-  const html = text(payload.price_html)
-  if (html) {
-    const value = new DOMParser().parseFromString(html, 'text/html').body.textContent?.replace(/\s+/g, ' ').trim()
-    if (value) return value
+export type ProductPrice =
+  | { kind: 'none' }
+  | { kind: 'single'; price: string }
+  | { kind: 'sale'; regular: string; sale: string }
+  | { kind: 'range'; min: string; max: string }
+
+function money(value: unknown, currency?: string | null) {
+  const amount = Number(text(value) || value)
+  if (text(value) === '' && typeof value !== 'number') return null
+  if (!Number.isFinite(amount)) return null
+  return currency ? amount.toLocaleString('de-DE', { style: 'currency', currency }) : amount.toLocaleString('de-DE', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
+}
+
+// Built from the structured price fields: the shop's price_html contains hidden screen-reader text and
+// is outdated while a price edit is queued.
+export function productPrice(product: { payload: Record<string, unknown>; priceRange?: [number, number] | null; productType?: string }, currency?: string | null): ProductPrice {
+  const { payload } = product
+  if (product.priceRange) {
+    const [min, max] = product.priceRange.map((value) => money(value, currency))
+    return !min || !max ? { kind: 'none' } : min === max ? { kind: 'single', price: min } : { kind: 'range', min, max }
   }
-  const price = Number(text(payload.price))
-  if (!text(payload.price) || !Number.isFinite(price)) return '—'
-  return currency ? price.toLocaleString('de-DE', { style: 'currency', currency }) : price.toLocaleString('de-DE', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
+  const regular = money(payload.regular_price, currency)
+  const sale = money(payload.sale_price, currency)
+  if (sale && regular && Number(payload.sale_price) < Number(payload.regular_price) && payload.on_sale !== false) return { kind: 'sale', regular, sale }
+  const single = regular ?? money(payload.price, currency)
+  return single ? { kind: 'single', price: single } : { kind: 'none' }
 }
 
 export function productStock(payload: Record<string, unknown>) {
@@ -50,11 +66,4 @@ export function productFieldValue(field: string, value: unknown): string {
     return plain.length > 120 ? `${plain.slice(0, 117)}...` : plain || '—'
   }
   return String(value)
-}
-
-// While a price edit waits for the shop, the shop-calculated price fields are outdated; show the edit instead.
-export function displayPrice(product: { payload: Record<string, unknown>; changes: Record<string, unknown> | null }, currency?: string | null) {
-  if (!product.changes || !('regular_price' in product.changes || 'sale_price' in product.changes)) return productPrice(product.payload, currency)
-  const sale = text(product.payload.sale_price)
-  return productPrice({ price: sale || text(product.payload.regular_price) }, currency)
 }

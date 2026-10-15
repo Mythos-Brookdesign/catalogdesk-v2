@@ -682,11 +682,16 @@ function openDatabase(filename) {
           (SELECT json_group_array(json_object('taxonomy', r.taxonomy, 'label', coalesce(tx.label, r.taxonomy), 'name', t.name))
             FROM product_taxonomies r JOIN taxonomy_terms t ON t.shop_url = r.shop_url AND t.taxonomy = r.taxonomy AND t.term_id = r.term_id
             LEFT JOIN taxonomies tx ON tx.shop_url = r.shop_url AND tx.taxonomy = r.taxonomy
-            WHERE r.shop_url = p.shop_url AND r.product_id = p.product_id) AS terms
+            WHERE r.shop_url = p.shop_url AND r.product_id = p.product_id) AS terms,
+          -- Variable products have no own price; their list price is the range of their variations' current prices.
+          (SELECT json_array(min(price), max(price)) FROM (
+            SELECT CAST(coalesce(nullif(json_extract(json_patch(v.payload, coalesce(vc.changes, '{}')), '$.sale_price'), ''), nullif(json_extract(json_patch(v.payload, coalesce(vc.changes, '{}')), '$.regular_price'), ''), nullif(json_extract(v.payload, '$.price'), '')) AS REAL) AS price
+            FROM products v LEFT JOIN product_changes vc ON vc.shop_url = v.shop_url AND vc.product_id = v.product_id
+            WHERE v.shop_url = p.shop_url AND v.parent_id = p.product_id) WHERE price IS NOT NULL) AS priceRange
         ${from} WHERE ${whereSql}
         ORDER BY coalesce(parent.name, p.name) COLLATE NOCASE, coalesce(p.parent_id, p.product_id), p.parent_id IS NOT NULL, p.name COLLATE NOCASE, p.product_id
         LIMIT ? OFFSET ?`).all(...values, parsed.pageSize, parsed.page * parsed.pageSize)
-        .map((row) => ({ ...row, payload: JSON.parse(row.payload), terms: JSON.parse(row.terms), changes: row.changes ? JSON.parse(row.changes) : null, base: row.base ? JSON.parse(row.base) : null, remote: row.remote ? JSON.parse(row.remote) : null }))
+        .map((row) => ({ ...row, payload: JSON.parse(row.payload), terms: JSON.parse(row.terms), priceRange: row.priceRange && JSON.parse(row.priceRange)[0] !== null ? JSON.parse(row.priceRange) : null, changes: row.changes ? JSON.parse(row.changes) : null, base: row.base ? JSON.parse(row.base) : null, remote: row.remote ? JSON.parse(row.remote) : null }))
       return { products, total, page: parsed.page, pageSize: parsed.pageSize, currency, changeCounts: this.productChangeCounts({ shopUrl }) }
     },
     replaceCatalog(input) {
