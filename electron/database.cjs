@@ -58,7 +58,7 @@ function openDatabase(filename) {
     database.exec('PRAGMA busy_timeout = 5000; PRAGMA foreign_keys = ON; PRAGMA journal_mode = WAL; PRAGMA synchronous = FULL;')
     database.exec('BEGIN IMMEDIATE')
     const version = database.prepare('PRAGMA user_version').get().user_version
-    if (version > 3) throw new Error('Database schema is newer than this app.')
+    if (version > 4) throw new Error('Database schema is newer than this app.')
     if (version < 1) {
       database.exec(`
         CREATE TABLE shops (
@@ -145,6 +145,14 @@ function openDatabase(filename) {
           CASE WHEN role = 'admin' THEN '[]' ELSE '["dashboard","products"]' END FROM users_old;
         DROP TABLE users_old; PRAGMA user_version = 3;`)
     }
+    if (version < 4) {
+      database.exec(`CREATE TABLE app_settings (
+        key TEXT PRIMARY KEY CHECK(key = 'theme'),
+        value TEXT NOT NULL CHECK(value IN ('light', 'dark'))
+      ) STRICT;
+      INSERT INTO app_settings VALUES ('theme', 'light');
+      PRAGMA user_version = 4;`)
+    }
     database.exec('COMMIT')
   } catch (error) {
     if (database.isTransaction) database.exec('ROLLBACK')
@@ -153,6 +161,14 @@ function openDatabase(filename) {
   }
 
   return {
+    getTheme() {
+      return database.prepare("SELECT value FROM app_settings WHERE key = 'theme'").get().value
+    },
+    setTheme(input) {
+      const theme = z.enum(['light', 'dark']).parse(input)
+      database.prepare("UPDATE app_settings SET value = ? WHERE key = 'theme'").run(theme)
+      return theme
+    },
     listUsers() {
       return database.prepare('SELECT id, first_name AS firstName, last_name AS lastName, email, username, role, permissions FROM users ORDER BY last_name, first_name').all()
         .map((user) => ({ ...user, permissions: JSON.parse(user.permissions) }))

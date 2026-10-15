@@ -25,9 +25,13 @@ Menu permissions are enforced in Main for implemented data endpoints, not just t
 
 ## WooCommerce Connection
 
-Settings and Shop Connection provide a shared connection form with an HTTPS shop URL, Consumer Key and Consumer Secret. Admins and employees explicitly granted Settings or Shop Connection access can configure it. API keys are encrypted using Electron safeStorage and stored separately from SQLite at `userData/credentials/shop-connection.enc`; stored keys are never returned to the renderer or placed in localStorage. Linux requires a secure keyring backend (no basic_text fallback).
+Shop Connection provides the connection form with an HTTPS shop URL, Consumer Key and Consumer Secret. Admins and employees explicitly granted Shop Connection access can configure it. General Settings does not expose the shop connection. API keys are encrypted using Electron safeStorage and stored separately from SQLite at `userData/credentials/shop-connection.enc`; stored keys are never returned to the renderer or placed in localStorage. Linux requires a secure keyring backend (no basic_text fallback).
 
 The read-only connection test sends one GET request to `wc/v3/products` with a 15-second timeout and 64-KB response bound, and refuses redirects. Testing does not save changes automatically: use Save Connection explicitly. Blank key fields preserve existing keys only for the same normalized shop URL; a different URL requires both new keys. Removing the connection requires confirmation and leaves catalog data unchanged. Shop import and synchronization are not part of this step.
+
+## Appearance
+
+General Settings provides Light and Dark modes. Selection applies immediately to the whole app and is persisted as a shared local workspace setting in SQLite (schema v4). The login screen and native window background load the saved mode before displaying the workspace. Theme updates require the Settings permission; reading only the theme is permitted before login. A failed save restores the previous mode.
 
 ## Development
 

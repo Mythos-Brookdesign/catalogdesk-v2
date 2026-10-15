@@ -68,10 +68,13 @@ export type AdminProfile = {
 }
 export type ShopConnectionInput = { url: string; consumerKey: string; consumerSecret: string }
 export type ShopConnectionCheck = { url: string; productCount: number; checkedAt: string }
+export type Theme = 'light' | 'dark'
 
 declare global {
   interface Window {
     catalogDesk?: {
+      getTheme: () => Promise<UserResult<Theme>>
+      setTheme: (theme: Theme) => Promise<UserResult<Theme>>
       shopConnection: () => Promise<UserResult<{ url: string } | null>>
       saveShopConnection: (input: ShopConnectionInput) => Promise<UserResult<{ url: string }>>
       testShopConnection: (input: ShopConnectionInput | null) => Promise<UserResult<ShopConnectionCheck>>

@@ -1,4 +1,12 @@
 .settings-page { display: grid; align-content: start; gap: 24px; }
+.appearance-settings { width: min(100%, 720px); display: grid; gap: 18px; border-top: 1px solid var(--line); padding-top: 20px; }
+.appearance-settings h2 { color: var(--ink); font-size: 18px; }
+.theme-options { display: flex; flex-wrap: wrap; gap: 12px; border: 0; padding: 0; margin: 0; }
+.theme-options legend { margin-bottom: 12px; color: var(--muted); font-size: 12px; }
+.theme-option { display: flex; align-items: center; gap: 9px; min-height: 44px; min-width: 140px; padding: 10px 16px; border: 1px solid var(--line); border-radius: 4px; background: var(--surface); color: var(--ink); cursor: pointer; font-size: 13px; }
+.theme-option.selected { border-color: var(--accent); }
+.theme-option input { accent-color: var(--accent); }
+.theme-option svg { color: var(--muted); }
 .shop-settings { width: min(100%, 720px); display: grid; gap: 18px; border-top: 1px solid var(--line); padding-top: 20px; }
 .shop-settings-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 15px; }
 .shop-settings-heading > div { min-width: 0; }

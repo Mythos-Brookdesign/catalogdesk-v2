@@ -17,9 +17,13 @@
   --amber-soft: #f7f0df;
   --red: #a23f36;
   --red-soft: #f8e9e6;
+  --background: #f3f5f2;
+  --text-h: var(--ink);
+  --code-bg: var(--surface-alt);
+  color-scheme: light;
   font-family: 'IBM Plex Sans Variable', sans-serif;
   color: var(--ink);
-  background: #f3f5f2;
+  background: var(--background);
   font-synthesis: none;
   text-rendering: optimizeLegibility;
   -webkit-font-smoothing: antialiased;
@@ -27,6 +31,25 @@
 }
 
 * { box-sizing: border-box; }
+:root[data-theme='dark'] {
+  --ink: #edf2ef;
+  --muted: #aab6af;
+  --line: #3b4540;
+  --surface: #242c28;
+  --surface-alt: #202722;
+  --surface-hover: #2d3932;
+  --background: #171b19;
+  --accent: #28785a;
+  --accent-strong: #216349;
+  --green: #96dfb5;
+  --green-soft: #294235;
+  --amber: #edce8c;
+  --amber-soft: #443c28;
+  --red: #ffb5ac;
+  --red-soft: #472c2a;
+  color-scheme: dark;
+}
+[data-theme='dark'] .app-sidebar { background: #18221c; }
 body { margin: 0; min-width: 360px; min-height: 100vh; }
 button, input, select { font: inherit; }
 button { color: inherit; cursor: pointer; }

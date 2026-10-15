@@ -18,6 +18,8 @@ async function authenticate(channel, payload) {
 }
 
 contextBridge.exposeInMainWorld('catalogDesk', {
+  getTheme: () => ipcRenderer.invoke('catalog:v2:theme-get'),
+  setTheme: (theme) => authorized('catalog:v2:theme-set', theme),
   shopConnection: () => authorized('catalog:v2:shop-summary'),
   saveShopConnection: (payload) => authorized('catalog:v2:shop-save', payload),
   testShopConnection: (payload) => authorized('catalog:v2:shop-test', payload),

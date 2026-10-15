@@ -11,7 +11,7 @@ function canonicalUrl(value: string) {
   } catch { return '' }
 }
 
-export function SettingsPage({ title = 'Einstellungen' }: { title?: string }) {
+export function ShopConnectionPage() {
   const desktop = window.catalogDesk
   const [url, setUrl] = useState('')
   const [savedUrl, setSavedUrl] = useState<string | null>(null)
@@ -69,7 +69,7 @@ export function SettingsPage({ title = 'Einstellungen' }: { title?: string }) {
   }
 
   return <main className="section-page settings-page">
-    <header><h1>{title}</h1></header>
+    <header><h1>Shopverbindung</h1></header>
     <section className="shop-settings" aria-labelledby="shop-settings-title">
       <div className="shop-settings-heading"><div><h2 id="shop-settings-title">WooCommerce-Shop</h2><p>{savedUrl ? `Gespeichert: ${savedUrl}` : 'Noch keine Shopverbindung gespeichert.'}</p></div>{savedUrl && <button className="icon-button" title="Shopverbindung entfernen" aria-label="Shopverbindung entfernen" disabled={busy} onClick={() => { setConfirmDelete(true); setError('') }}><Trash2 size={17} /></button>}</div>
       {!desktop && <p role="status">Shopverbindungen sind nur in der Desktop-App verfuegbar.</p>}

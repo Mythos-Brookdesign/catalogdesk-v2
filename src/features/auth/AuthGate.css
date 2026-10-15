@@ -8,8 +8,8 @@
     135deg,
     transparent,
     transparent 18px,
-    #dfe8e2 18px,
-    #dfe8e2 19px
+    var(--line) 18px,
+    var(--line) 19px
   );
 }
 .auth-panel {
@@ -65,7 +65,7 @@
   padding: 8px 10px;
   border: 1px solid var(--line);
   border-radius: 4px;
-  background: #fff;
+  background: var(--surface);
   color: var(--ink);
 }
 .auth-submit { width: 100%; min-height: 41px; margin-top: 3px; }

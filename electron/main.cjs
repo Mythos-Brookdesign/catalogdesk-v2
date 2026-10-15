@@ -12,6 +12,7 @@ const entryUrl = development ? 'http://127.0.0.1:5179/' : 'catalog://app/index.h
 let mainWindow
 let database
 let authenticator
+let initialTheme = 'light'
 
 if (!app.isPackaged && process.env.CATALOGDESK_V2_TEST_USER_DATA) {
   mkdirSync(process.env.CATALOGDESK_V2_TEST_USER_DATA, { recursive: true, mode: 0o700 })
@@ -52,7 +53,7 @@ function createWindow() {
     minHeight: 620,
     title: 'CatalogDesk',
     show: false,
-    backgroundColor: '#f3f5f2',
+    backgroundColor: initialTheme === 'dark' ? '#171b19' : '#f3f5f2',
     webPreferences: {
       preload: path.join(__dirname, 'preload.cjs'),
       nodeIntegration: false,
@@ -68,7 +69,7 @@ function createWindow() {
   void mainWindow.loadURL(entryUrl)
 }
 
-app.whenReady().then(() => {
+app.whenReady().then(async () => {
   database = createDatabaseClient(path.join(app.getPath('userData'), 'data', 'catalogdesk-v2.sqlite'))
   authenticator = createAuthenticator((operation, payload) =>
     database.request(operation, payload),
@@ -76,11 +77,22 @@ app.whenReady().then(() => {
   const shopStore = createShopStore(path.join(app.getPath('userData'), 'credentials'), safeStorage)
   let shopOperationRunning = false
   function authorizeShopSettings(event, envelope) {
-    const { user, payload } = authorize(event, envelope, 'session')
-    if (user.role !== 'admin' && !user.permissions.some((entry) => ['settings', 'shop'].includes(entry)))
-      throw new Error('Keine Berechtigung fuer die Shopverbindung.')
-    return payload
+    return authorize(event, envelope, 'shop').payload
   }
+  ipcMain.handle('catalog:v2:theme-get', async (event) => {
+    validateSender(event)
+    try { return { ok: true, value: await database.request('getTheme') } }
+    catch { return { ok: false, error: 'Farbschema konnte nicht geladen werden.' } }
+  })
+  ipcMain.handle('catalog:v2:theme-set', async (event, envelope) => {
+    try {
+      const { payload } = authorize(event, envelope, 'settings')
+      const theme = await database.request('setTheme', payload)
+      initialTheme = theme
+      mainWindow?.setBackgroundColor(theme === 'dark' ? '#171b19' : '#f3f5f2')
+      return { ok: true, value: theme }
+    } catch { return { ok: false, error: 'Farbschema konnte nicht gespeichert werden oder Berechtigung fehlt.' } }
+  })
   for (const operation of ['summary', 'save', 'test', 'delete']) {
     ipcMain.handle(`catalog:v2:shop-${operation}`, async (event, envelope) => {
       let acquired = false
@@ -174,6 +186,8 @@ app.whenReady().then(() => {
       }
     })
   }
+  try { initialTheme = await database.request('getTheme') }
+  catch { initialTheme = 'light' }
   createWindow()
   app.on('activate', () => {
     if (!BrowserWindow.getAllWindows().length) createWindow()

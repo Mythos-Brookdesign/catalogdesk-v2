@@ -6,6 +6,19 @@ import { DatabaseSync } from 'node:sqlite'
 import databaseModule from './database.cjs'
 
 const paths = []
+it('persists theme selection and rejects invalid values without changing it', () => {
+  const directory = mkdtempSync(path.join(os.tmpdir(), 'catalogdesk-v2-theme-'))
+  paths.push(directory)
+  const filename = path.join(directory, 'theme.sqlite')
+  let database = databaseModule.openDatabase(filename)
+  expect(database.getTheme()).toBe('light')
+  expect(database.setTheme('dark')).toBe('dark')
+  expect(() => database.setTheme('invalid')).toThrow()
+  database.close()
+  database = databaseModule.openDatabase(filename)
+  try { expect(database.getTheme()).toBe('dark') }
+  finally { database.close() }
+})
 afterEach(() => {
   for (const directory of paths.splice(0)) rmSync(directory, { recursive: true, force: true })
 })
@@ -22,7 +35,7 @@ it('migrates existing v2 users without losing passwords or profiles', () => {
     CREATE TABLE users AS SELECT id, first_name, last_name, email, username,
       role, password_salt, password_hash, active, created_at FROM users_v3;
     DROP TABLE users_v3;
-    UPDATE users SET role = 'editor'; PRAGMA user_version = 2;`)
+    UPDATE users SET role = 'editor'; DROP TABLE app_settings; PRAGMA user_version = 2;`)
   old.close()
   database = databaseModule.openDatabase(filename)
   try {

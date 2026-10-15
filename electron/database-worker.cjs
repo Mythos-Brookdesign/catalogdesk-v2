@@ -11,6 +11,8 @@ try {
 
 const operations = new Set([
   'userCount',
+  'getTheme',
+  'setTheme',
   'findUserByUsername',
   'createInitialAdmin',
   'recordLogin',
