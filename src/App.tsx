@@ -5,9 +5,10 @@ import {
   CircleHelp,
   Database,
   GitCompareArrows,
-  LayoutGrid,
-  Settings2,
+  Settings,
+  ShoppingBag,
   Tags,
+  UsersRound,
 } from 'lucide-react'
 import './App.css'
 import { ProductsPage } from './features/products/ProductsPage'
@@ -34,17 +35,23 @@ function App() {
           >
             <Boxes size={17} />Produkte
           </button>
+          <button disabled title="Bestellverwaltung folgt in einer späteren Phase">
+            <ShoppingBag size={17} />Bestellungen
+          </button>
+          <button disabled title="Kundenverwaltung folgt nach Datenschutz- und Rollenmodell">
+            <UsersRound size={17} />Kunden
+          </button>
+        </nav>
+        <div className="sidebar-caption secondary-caption">EINSTELLUNGEN</div>
+        <nav className="app-nav">
+          <button disabled title="Allgemeine Einstellungen folgen als eigener Bereich">
+            <Settings size={17} />Einstellungen
+          </button>
           <button disabled title="Taxonomiepflege folgt im Produktbereich">
             <Tags size={17} />Taxonomien
           </button>
           <button disabled title="Synchronisation folgt nach dem lokalen Produktmodell">
             <GitCompareArrows size={17} />Synchronisation
-          </button>
-        </nav>
-        <div className="sidebar-caption secondary-caption">KATALOG</div>
-        <nav className="app-nav">
-          <button disabled title="Weitere Arbeitsbereiche folgen">
-            <LayoutGrid size={17} />Arbeitsbereiche
           </button>
         </nav>
         <footer className="sidebar-status">
@@ -61,7 +68,6 @@ function App() {
           <div className="topbar-tools">
             <span className="connection-state"><span className="status-dot" />Offline bereit</span>
             <button className="icon-button" aria-label="Hilfe" title="Hilfe"><CircleHelp size={17} /></button>
-            <button className="icon-button" aria-label="Einstellungen" title="Einstellungen"><Settings2 size={17} /></button>
           </div>
         </header>
         {activeSection === 'products' && <ProductsPage desktop={desktop} />}
