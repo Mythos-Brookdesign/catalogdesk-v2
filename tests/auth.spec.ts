@@ -15,7 +15,29 @@ async function mockWooCommerce(application: ElectronApplication, key: string, se
       const expected = `Basic ${Buffer.from(`${credentials.key}:${credentials.secret}`).toString('base64')}`
       const json = (body: unknown, status = 200) => new Response(JSON.stringify(body), { status, headers: { 'content-type': 'application/json', 'x-wp-totalpages': '1' } })
       const categoryWrite = url.pathname.match(/^\/wp-json\/wc\/v3\/products\/categories(?:\/(\d+))?$/)
-      if ((globalThis as { catalogOffline?: boolean }).catalogOffline && categoryWrite) throw new TypeError('net::ERR_INTERNET_DISCONNECTED')
+      const productRoute = url.pathname.match(/^\/wp-json\/wc\/v3\/products\/(?:60\/variations\/)?(\d+)$/)
+      // The simulated shop keeps product edits, so reads after a write see them (like a real shop).
+      const shop = globalThis as { catalogOffline?: boolean; catalogProducts?: Record<number, Record<string, unknown>> }
+      shop.catalogProducts ??= {
+        60: { id: 60, name: 'Hoodie', type: 'variable', status: 'publish', sku: 'HOOD', variations: [61, 62], price_html: '<span class="amount">49,90&nbsp;<span>€</span></span>',
+          categories: [{ id: 4, name: 'Kleidung &amp; Mode', slug: 'kleidung' }], delivery_time: { id: 12, name: '2-3 Werktage', slug: '2-3-werktage', html: '' },
+          attributes: [{ id: 1, name: 'Farbe', options: ['Rot', 'Blau'], variation: true }], dimensions: { length: '', width: '', height: '' } },
+        70: { id: 70, name: 'Socken', type: 'simple', status: 'draft', sku: 'SOCK', price: '9.90', regular_price: '9.90', sale_price: '', manage_stock: true, stock_quantity: 3, stock_status: 'instock',
+          categories: [{ id: 4, name: 'Kleidung &amp; Mode', slug: 'kleidung' }], dimensions: { length: '', width: '', height: '' } },
+      }
+      const products = shop.catalogProducts
+      if (shop.catalogOffline && (categoryWrite || productRoute)) throw new TypeError('net::ERR_INTERNET_DISCONNECTED')
+      if (productRoute && products[Number(productRoute[1])]) {
+        if (options?.redirect !== 'error' || options.headers?.Authorization !== expected) throw new Error('Unexpected shop request')
+        const product = products[Number(productRoute[1])]
+        if (options.method === 'PUT') {
+          const body = JSON.parse(String(options.body))
+          const terms: Record<number, { id: number; name: string; slug: string }> = { 4: { id: 4, name: 'Kleidung &amp; Mode', slug: 'kleidung' }, 5: { id: 5, name: 'Shirts', slug: 'shirts' }, 12: { id: 12, name: '2-3 Werktage', slug: '2-3-werktage' } }
+          for (const [field, value] of Object.entries(body)) product[field] = Array.isArray(value) ? value.map((entry: { id: number }) => terms[entry.id]) : value && typeof value === 'object' && 'id' in value ? terms[(value as { id: number }).id] : value
+          if ('regular_price' in body) product.price = body.regular_price
+        } else if (options.method !== 'GET') throw new Error('Unexpected shop request')
+        return json(product)
+      }
       if (options?.method !== 'GET') {
         if (!categoryWrite || options?.redirect !== 'error' || options.headers?.Authorization !== expected) throw new Error('Unexpected shop request')
         const body = options.body ? JSON.parse(String(options.body)) : {}
@@ -42,6 +64,11 @@ async function mockWooCommerce(application: ElectronApplication, key: string, se
         '/wc/v3/products/delivery_times': termRoute('product_delivery_time', ['id', 'name', 'slug', 'count']),
         '/wc/v3/products/seasons': termRoute('product_season', ['id', 'name', 'slug', 'count']),
         '/wc/v3/marketplace/featured': { endpoints: [{ methods: ['GET'], args: [] }] },
+        '/wc/v3/products/(?P<id>[\\d]+)': { endpoints: [{ methods: ['GET'], args: {} }, { methods: ['POST', 'PUT', 'PATCH'], args: {
+          categories: { type: 'array', items: { type: 'object', properties: { id: {}, name: {}, slug: {} } } },
+          delivery_time: { type: 'object', properties: { id: {}, name: {}, slug: {}, html: {} } },
+          images: { type: 'array', items: { type: 'object', properties: { id: {}, src: {}, name: {}, alt: {} } } },
+        } }] },
       } })
       const taxonomyRoutes: Record<string, unknown[]> = {
         '/wp-json/wc/v3/products/categories': [{ id: 4, name: 'Kleidung &amp; Mode', slug: 'kleidung', parent: 0, count: 12 }, { id: 5, name: 'Shirts', slug: 'shirts', parent: 4, count: 7 }],
@@ -51,12 +78,7 @@ async function mockWooCommerce(application: ElectronApplication, key: string, se
         '/wp-json/wc/v3/products/attributes': [{ id: 1, name: 'Farbe', slug: 'pa_farbe', type: 'select', order_by: 'menu_order', has_archives: false }],
         '/wp-json/wc/v3/products/attributes/1/terms': [{ id: 30, name: 'Rot', slug: 'rot', menu_order: 0, count: 4 }, { id: 31, name: 'Blau', slug: 'blau', menu_order: 1, count: 2 }],
       }
-      if (url.pathname === '/wp-json/wc/v3/products' && url.searchParams.get('per_page') === '100') return json([
-        { id: 60, name: 'Hoodie', type: 'variable', status: 'publish', sku: 'HOOD', variations: [61, 62], price_html: '<span class="amount">49,90&nbsp;<span>€</span></span>',
-          categories: [{ id: 4, name: 'Kleidung &amp; Mode', slug: 'kleidung' }], delivery_time: { id: 12, name: '2-3 Werktage', slug: '2-3-werktage', html: '' },
-          attributes: [{ id: 1, name: 'Farbe', options: ['Rot', 'Blau'], variation: true }] },
-        { id: 70, name: 'Socken', type: 'simple', status: 'draft', sku: 'SOCK', price: '9.90', manage_stock: true, stock_quantity: 3, stock_status: 'instock', categories: [{ id: 4, name: 'Kleidung &amp; Mode', slug: 'kleidung' }] },
-      ])
+      if (url.pathname === '/wp-json/wc/v3/products' && url.searchParams.get('per_page') === '100') return json([products[60], products[70]])
       if (url.pathname === '/wp-json/wc/v3/data/currencies/current') return json({ code: 'EUR', name: 'Euro', symbol: '€' })
       if (url.pathname === '/wp-json/wc/v3/products/60/variations') return json([
         { id: 61, name: 'Hoodie - Rot', status: 'publish', sku: 'HOOD-R', price: '49.90', stock_status: 'instock', attributes: [{ id: 1, name: 'Farbe', option: 'Rot' }] },
@@ -242,6 +264,50 @@ test('creates the first admin before showing the app and requires login on the n
     await page.getByLabel('Produkttyp').selectOption('variation')
     await expect(productRows).toHaveCount(2)
     await page.getByLabel('Produkttyp').selectOption('all')
+
+    await productRows.filter({ hasText: 'HOOD' }).first().click()
+    await inspector.getByRole('button', { name: 'Bearbeiten', exact: true }).click()
+    let editor = page.getByRole('dialog')
+    await editor.getByLabel('Name', { exact: true }).fill('Hoodie Classic')
+    await editor.getByRole('group', { name: /Kategorien/ }).getByLabel('Shirts').check()
+    await editor.getByLabel('Lieferzeiten').selectOption({ label: '— keine —' })
+    await page.screenshot({ path: testInfo.outputPath('product-editor.png') })
+    await editor.getByRole('button', { name: 'Speichern', exact: true }).click()
+    await expect(page.getByRole('status').filter({ hasText: 'Im Shop gespeichert' })).toContainText('„Hoodie Classic“ wurde uebertragen.')
+    await expect(productRows.first()).toContainText('Hoodie Classic')
+    await expect(inspector).toContainText('Kleidung & Mode, Shirts')
+    expect(await application.evaluate(() => (globalThis as unknown as { catalogProducts: Record<number, { delivery_time: unknown }> }).catalogProducts[60].delivery_time)).toBeUndefined()
+
+    await application.evaluate(() => { (globalThis as { catalogOffline?: boolean }).catalogOffline = true })
+    await page.screenshot({ path: testInfo.outputPath('products-edit-icons.png') })
+    await page.getByRole('button', { name: 'Bearbeiten: Socken', exact: true }).click()
+    editor = page.getByRole('dialog')
+    await expect(editor.getByLabel('Name', { exact: true })).toHaveValue('Socken')
+    await editor.getByLabel('Regulaerer Preis').fill('12,50')
+    await editor.getByLabel('Bestand', { exact: true }).fill('5')
+    await editor.getByRole('button', { name: 'Speichern', exact: true }).click()
+    await expect(page.getByRole('status').filter({ hasText: 'Offline gespeichert' })).toBeVisible()
+    await expect(productRows.filter({ hasText: 'Socken' })).toContainText('Geaendert')
+    await expect(page.getByText('1 Produktaenderung wartet auf Uebertragung')).toBeVisible()
+    await expect(productRows.filter({ hasText: 'Socken' })).toContainText(/12,50\s€.*Vorraetig \(5\)/)
+    await expect(inspector.locator('.product-pending')).toContainText('12.50')
+    // Meanwhile an order reduces the stock in the shop.
+    await application.evaluate(() => {
+      const shop = globalThis as unknown as { catalogOffline: boolean; catalogProducts: Record<number, { stock_quantity: number }> }
+      shop.catalogOffline = false
+      shop.catalogProducts[70].stock_quantity = 2
+    })
+    await page.getByRole('button', { name: 'Jetzt synchronisieren', exact: true }).click()
+    await expect(page.getByRole('status').filter({ hasText: 'Konflikt mit dem Shop' })).toBeVisible()
+    const conflict = inspector.getByRole('region', { name: 'Konflikt loesen' })
+    await expect(conflict).toContainText('Bestand')
+    await page.screenshot({ path: testInfo.outputPath('product-conflict.png') })
+    await conflict.getByRole('radio').first().check()
+    await conflict.getByRole('button', { name: 'Entscheidung uebernehmen' }).click()
+    await expect(page.getByRole('status').filter({ hasText: 'Konflikt geloest' })).toBeVisible()
+    await expect(productRows.filter({ hasText: 'Socken' })).toContainText(/12,50\s€.*Vorraetig \(2\)/)
+    await expect(productRows.filter({ hasText: 'Socken' })).not.toContainText('Konflikt')
+    expect(await application.evaluate(() => (globalThis as unknown as { catalogProducts: Record<number, { regular_price: string; stock_quantity: number }> }).catalogProducts[70])).toMatchObject({ regular_price: '12.50', stock_quantity: 2 })
     await page.setViewportSize({ width: 600, height: 850 })
     expect(await page.evaluate(() => document.documentElement.scrollWidth <= document.documentElement.clientWidth)).toBe(true)
     await page.setViewportSize({ width: 1440, height: 920 })
@@ -322,7 +388,7 @@ test('creates the first admin before showing the app and requires login on the n
     await page.getByRole('button', { name: 'Historie', exact: true }).click()
     const history = page.locator('.history-table')
     for (const summary of ['Shopverbindung entfernt', 'Benutzer „Grace Mitarbeiter“ geloescht', 'Benutzer „Grace Hopper“ angelegt', 'Begriff „Hosen“ in Kategorien angelegt',
-      'Begriff „T-Shirts“ in Kategorien geaendert', '2 Taxonomie-Aenderungen an den Shop uebertragen', 'Taxonomien importiert: 7 Taxonomien, 8 Begriffe', 'Produkte importiert: 2 Produkte, 2 Varianten', 'Shopverbindung gespeichert', 'Farbschema auf Dunkel geaendert', 'Ersten Administrator eingerichtet'])
+      'Begriff „T-Shirts“ in Kategorien geaendert', '2 Taxonomie-Aenderungen an den Shop uebertragen', 'Taxonomien importiert: 7 Taxonomien, 8 Begriffe', 'Produkte importiert: 2 Produkte, 2 Varianten', 'Produkt „Hoodie Classic“ geaendert', 'Produkt „Socken“ geaendert', 'Konflikt bei „Socken“ geloest', 'Shopverbindung gespeichert', 'Farbschema auf Dunkel geaendert', 'Ersten Administrator eingerichtet'])
       await expect(history.getByRole('cell', { name: summary, exact: true }).first()).toBeVisible()
     await history.getByRole('button', { name: 'Details: Benutzer „Grace Mitarbeiter“ geaendert' }).click()
     const changeRow = history.locator('.history-changes tr').filter({ hasText: 'Name' }).first()

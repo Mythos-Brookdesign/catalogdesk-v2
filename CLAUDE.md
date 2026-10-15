@@ -10,3 +10,7 @@
 - Every IPC handler that changes data, touches the shop or affects access calls `audit(user, { category, action, summary, targetType, targetId, targetLabel, shopUrl, details })` in `electron/main.cjs`, for success and for rejected attempts (`outcome: 'failure'`).
 - `summary` is a readable German sentence naming the record (e.g. „Begriff „Hosen“ in Kategorien angelegt“); before/after values go into `details.changes` as `{ field, before, after }` with readable values.
 - Never record passwords, API keys or session tokens. New categories must be added to `auditCategories` (database) and the History page.
+
+## Shop writes
+- Writes to WooCommerce always go through an outbox table and a sync module (`taxonomy-sync.cjs`, `product-sync.cjs`) run by `runShopSync()` in Main: queue locally first, send immediately when online, keep queued offline.
+- Before overwriting shop data that others can change, read the current shop state and treat fields changed there since the local base as conflicts; send only changed fields and verify the shop's answer.

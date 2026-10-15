@@ -111,4 +111,4 @@ async function importProducts(connection, fetcher, onProgress = () => {}) {
   return { shopUrl: normalizeUrl(connection.url), importedAt: new Date().toISOString(), currency, products }
 }
 
-module.exports = { extractTerms, importProducts }
+module.exports = { extractTerms, importProducts, toProduct }

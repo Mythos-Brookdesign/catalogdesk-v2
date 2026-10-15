@@ -9,6 +9,8 @@ const { WooError, resolveConnection, testConnection } = require('./shop.cjs')
 const { importTaxonomies } = require('./taxonomies.cjs')
 const { syncTaxonomyChanges } = require('./taxonomy-sync.cjs')
 const { importProducts } = require('./products.cjs')
+const { syncProductChanges } = require('./product-sync.cjs')
+const productFields = require('./product-fields.cjs')
 
 const development = !app.isPackaged && process.argv.includes('--dev')
 const entryUrl = development ? 'http://127.0.0.1:5179/' : 'catalog://app/index.html'
@@ -180,21 +182,39 @@ app.whenReady().then(async () => {
       details: { transfers: changes.map((change) => ({ taxonomy: change.taxonomyLabel, term: change.name, operation: operationLabels[change.operation], termId: change.termId ?? null, result: change.outcome === 'success' ? 'uebertragen' : `abgelehnt: ${change.error}` })) },
     })
   }
-  // `exclude` skips changes the caller records itself (the edit that triggered this run).
-  async function runTaxonomySync({ notify = true, user = null, exclude = () => false } = {}) {
+  function auditProductSync(changes, user, shopUrl) {
+    if (!changes.length) return
+    const synced = changes.filter((change) => change.outcome === 'success').length
+    const conflicts = changes.filter((change) => change.outcome === 'conflict').length
+    const rejected = changes.length - synced - conflicts
+    void audit(user, {
+      category: 'sync', action: 'sync.products', shopUrl, outcome: synced || conflicts ? 'success' : 'failure',
+      summary: `${synced} Produkt-${synced === 1 ? 'Aenderung' : 'Aenderungen'} an den Shop uebertragen${conflicts ? `, ${conflicts} mit Konflikt` : ''}${rejected ? `, ${rejected} abgelehnt` : ''}`,
+      details: { transfers: changes.map((change) => ({ product: change.name, id: change.productId, fields: change.fields.join(', '),
+        result: { success: 'uebertragen', conflict: `Konflikt: ${(change.conflicts ?? []).join(', ')} im Shop geaendert`, failure: `abgelehnt: ${change.error}` }[change.outcome] })) },
+    })
+  }
+  const emptyProductSync = async (shopUrl) => ({ synced: 0, failed: 0, conflicts: 0, offline: true, changes: [], counts: await databaseCall('productChangeCounts', { shopUrl }) })
+  // Sends queued taxonomy edits, then product edits (products may reference new terms).
+  // `exclude…` skips changes the caller records itself (the edit that triggered this run).
+  async function runShopSync({ notify = true, user = null, excludeTerm = () => false, excludeProduct = () => false } = {}) {
     if (shopOperationRunning || !database) return null
     const connection = await shopStore.load().catch(() => null)
     if (!connection) return null
-    if (!net.isOnline()) return { synced: 0, failed: 0, offline: true, changes: [], ...(await databaseCall('taxonomyChangeCounts', { shopUrl: connection.url })) }
+    if (!net.isOnline()) return { synced: 0, failed: 0, offline: true, changes: [], ...(await databaseCall('taxonomyChangeCounts', { shopUrl: connection.url })), products: await emptyProductSync(connection.url) }
     shopOperationRunning = true
     try {
       const result = await syncTaxonomyChanges(connection, databaseCall, shopFetch)
-      auditSync(result.changes.filter((change) => !exclude(change)), user, connection.url)
+      auditSync(result.changes.filter((change) => !excludeTerm(change)), user, connection.url)
+      const products = result.offline ? await emptyProductSync(connection.url) : await syncProductChanges(connection, databaseCall, shopFetch)
+      auditProductSync(products.changes.filter((change) => !excludeProduct(change)), user, connection.url)
       if (notify && (result.synced || result.failed)) mainWindow?.webContents.send('catalog:v2:taxonomies-changed')
-      return result
+      if (notify && products.changes.length) mainWindow?.webContents.send('catalog:v2:products-changed')
+      return { ...result, products }
     } finally { shopOperationRunning = false }
   }
-  setInterval(() => { void runTaxonomySync().catch(() => {}) }, 30_000).unref?.()
+  const runTaxonomySync = ({ exclude, ...options } = {}) => runShopSync({ ...options, excludeTerm: exclude })
+  setInterval(() => { void runShopSync().catch(() => {}) }, 30_000).unref?.()
   ipcMain.handle('catalog:v2:taxonomies-change', async (event, envelope) => {
     let user = null
     const request = envelope?.payload && typeof envelope.payload === 'object' ? envelope.payload : {}
@@ -363,6 +383,8 @@ app.whenReady().then(async () => {
       const started = Date.now()
       progress({ step: 'taxonomies', label: 'Taxonomien werden aktualisiert ...', completed: 0, total: 1 })
       auditSync((await syncTaxonomyChanges(connection, databaseCall, shopFetch)).changes, user, connection.url)
+      // Queued product edits go out first; edits that cannot be sent stay queued over the import.
+      auditProductSync((await syncProductChanges(connection, databaseCall, shopFetch)).changes, user, connection.url)
       const taxonomies = await importTaxonomies(connection, shopFetch, (value) => progress({ step: 'taxonomies', label: `Taxonomien: ${value.label}`, completed: value.completed, total: value.total }))
       await databaseCall('replaceTaxonomies', taxonomies)
       const catalog = await importProducts(connection, shopFetch, progress)
@@ -382,6 +404,79 @@ app.whenReady().then(async () => {
       return { ok: false, error: message }
     } finally {
       if (acquired) shopOperationRunning = false
+    }
+  })
+  const productError = (error, fallback) => safeTaxonomyError(error) || /^(Produkt|Keine Shopverbindung)/.test(error.message ?? '') ? error.message : fallback
+  ipcMain.handle('catalog:v2:products-change', async (event, envelope) => {
+    let user = null
+    const request = envelope?.payload && typeof envelope.payload === 'object' ? envelope.payload : {}
+    try {
+      user = authorize(event, envelope, 'products').user
+      const shopUrl = await currentShopUrl()
+      const value = await databaseCall('queueProductChange', { shopUrl, productId: request.productId, values: request.values ?? {}, terms: request.terms ?? {} })
+      const own = (change) => change.productId === value.productId
+      const sync = value.queued ? await runShopSync({ notify: false, user, excludeProduct: own }) : null
+      const result = sync?.products.changes.find(own)
+      const changes = Object.keys(value.after).filter((field) => !productFields.same(value.before[field], value.after[field]))
+        .map((field) => ({ field: value.labels[field], before: productFields.display(field, value.before[field]), after: productFields.display(field, value.after[field]) }))
+      if (changes.length) void audit(user, {
+        category: 'catalog', action: 'catalog.product_update', shopUrl, targetType: value.variation ? 'variation' : 'product', targetId: String(value.productId), targetLabel: value.name,
+        summary: `${value.variation ? 'Variante' : 'Produkt'} „${value.name}“ geaendert`, outcome: result?.outcome === 'failure' ? 'failure' : 'success',
+        details: { changes, shop: !value.queued ? 'Entspricht wieder dem Stand im Shop' : !result ? 'Lokal vorgemerkt, wird spaeter uebertragen'
+          : { success: 'Im Shop gespeichert', conflict: `Konflikt: ${(result.conflicts ?? []).map((field) => value.labels[field] ?? field).join(', ')} wurde im Shop geaendert`, failure: `Vom Shop abgelehnt: ${result.error}` }[result.outcome] },
+      })
+      return { ok: true, value: { queued: value.queued, sync: sync?.products ?? null, outcome: result?.outcome ?? null, conflicts: result?.conflicts ?? [], error: result?.error ?? null } }
+    } catch (error) {
+      const message = productError(error, 'Aenderung konnte nicht gespeichert werden. Eingaben pruefen.')
+      if (user) void audit(user, { category: 'catalog', action: 'catalog.product_update', summary: 'Produktaenderung nicht gespeichert', outcome: 'failure', targetType: 'product', targetId: Number.isSafeInteger(request.productId) ? String(request.productId) : null, details: { error: message } })
+      return { ok: false, error: message }
+    }
+  })
+  ipcMain.handle('catalog:v2:products-sync', async (event, envelope) => {
+    try {
+      const { user, payload } = authorize(event, envelope, 'products')
+      if (payload?.retryFailed === true) await databaseCall('retryProductChanges', { shopUrl: await currentShopUrl() })
+      const sync = await runShopSync({ notify: false, user })
+      if (!sync) return { ok: false, error: 'Eine Shopaktion laeuft bereits. Bitte gleich erneut versuchen.' }
+      return { ok: true, value: sync.products }
+    } catch (error) {
+      return { ok: false, error: productError(error, 'Synchronisation fehlgeschlagen.') }
+    }
+  })
+  ipcMain.handle('catalog:v2:products-discard', async (event, envelope) => {
+    try {
+      const { user, payload } = authorize(event, envelope, 'products')
+      const shopUrl = await currentShopUrl()
+      const value = await databaseCall('discardProductChange', { shopUrl, productId: payload?.productId })
+      void audit(user, { category: 'catalog', action: 'catalog.product_discard', shopUrl, targetType: 'product', targetId: String(payload.productId), targetLabel: value.name,
+        summary: `Vorgemerkte Aenderung an „${value.name}“ verworfen`, details: { fields: value.fields.map((field) => productFields.scalarFields[field]?.label ?? field).join(', ') } })
+      return { ok: true, value: true }
+    } catch (error) {
+      return { ok: false, error: productError(error, 'Aenderung konnte nicht verworfen werden.') }
+    }
+  })
+  ipcMain.handle('catalog:v2:products-resolve', async (event, envelope) => {
+    try {
+      const { user, payload } = authorize(event, envelope, 'products')
+      const shopUrl = await currentShopUrl()
+      const value = await databaseCall('resolveProductConflict', { shopUrl, productId: payload?.productId, resolutions: payload?.resolutions ?? {} })
+      const label = (field) => productFields.scalarFields[field]?.label ?? field
+      void audit(user, { category: 'catalog', action: 'catalog.product_conflict', shopUrl, targetType: 'product', targetId: String(payload.productId), targetLabel: payload.name ? String(payload.name).slice(0, 200) : null,
+        summary: `Konflikt bei „${payload.name ? String(payload.name).slice(0, 200) : `#${payload.productId}`}“ geloest`,
+        details: { resolutions: [...value.kept.map((field) => ({ field: label(field), decision: 'Meine Aenderung behalten', shopValue: productFields.display(field, value.remote[field]) })), ...value.dropped.map((field) => ({ field: label(field), decision: 'Shop-Wert uebernommen', shopValue: productFields.display(field, value.remote[field]) }))] } })
+      const sync = await runShopSync({ notify: false, user })
+      return { ok: true, value: sync?.products ?? null }
+    } catch (error) {
+      return { ok: false, error: productError(error, 'Konflikt konnte nicht geloest werden.') }
+    }
+  })
+  ipcMain.handle('catalog:v2:products-editor-options', async (event, envelope) => {
+    try {
+      authorize(event, envelope, 'products')
+      const shopUrl = (await shopStore.summary().catch(() => null))?.url
+      return { ok: true, value: await databaseCall('productEditorOptions', shopUrl ? { shopUrl } : {}) }
+    } catch (error) {
+      return { ok: false, error: productError(error, 'Bearbeitungsoptionen konnten nicht geladen werden.') }
     }
   })
   ipcMain.handle('catalog:v2:products-list', async (event, envelope) => {

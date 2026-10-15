@@ -42,6 +42,14 @@ Products keep their complete REST object as payload, their family role (`type`: 
 
 The list shows each variable product followed by its variations, with SKU, type, price (the shop's `price_html`, or the stored shop currency for variations), stock and WooCommerce status, plus search, type filter and paging. The detail panel lists all assigned terms grouped by taxonomy. Progress is shown while importing; the import is recorded in History. The import is read-only for the shop.
 
+## Product Editing (online first, offline capable, conflict-safe)
+
+Select a product or variation and choose *Edit*. Editable for products: name, SKU, status, short description, description, regular and sale price (not for variable/grouped parents), stock management, stock quantity or stock status, weight, dimensions, shipping class, and every writable term field the shop offers. Variations: the same without name, short description and product-only term fields; status publish or private. Term fields are discovered from the PUT arguments in the REST index during the taxonomy import (`{ id }` objects or lists, e.g. categories, tags, brands, Germanized delivery time, manufacturer, unit, price labels) and mapped to their taxonomy by field name, by what imported products use, or by naming (`delivery_time` -> `product_delivery_time`). Validation happens in Main before anything is queued (prices as numbers, sale price below regular price, unique SKU, terms of the right taxonomy, existing shipping class).
+
+Edits are stored in the SQLite outbox `product_changes` (schema v11, one row per product: changed fields, the shop values they were based on, state) and shown in the list right away (Changed / Rejected / Conflict). They are sent immediately, and otherwise every 30 seconds, when the network returns, before a product import, or via *Sync now*; taxonomy edits go first. Setting a field back to the shop value removes it from the edit.
+
+Before writing, the product is read from the shop. A field that changed there since the edit was based on it (e.g. stock after an order) and differs from the edit is a conflict: nothing is written, and the detail panel shows previous value, current shop value and the edit for each such field to choose from ("shop" drops the edit for that field, "mine" sends it). Fields without conflict are not affected by other changes in the shop, because only changed fields are sent (`PUT` with those fields, terms by ID). The shop's answer is compared field by field; fields the shop did not take over stay as a rejected change with a message instead of being reported as saved. Every edit, conflict decision, discard and sync run is recorded in History with before/after values.
+
 ## Taxonomies
 
 Taxonomies imports every product taxonomy the shop exposes, without a fixed list, so plugin and custom taxonomies are included:

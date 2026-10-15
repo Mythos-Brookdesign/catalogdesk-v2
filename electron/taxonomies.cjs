@@ -66,6 +66,27 @@ function humanize(taxonomy) {
 
 // Every WooCommerce term collection (WC_REST_Terms_Controller and plugin subclasses) accepts `hide_empty`
 // and names its taxonomy in the schema title, so the REST index reveals all product taxonomies of the shop.
+// Writable term fields of products and variations ({ id } objects or lists of them), read from the
+// PUT arguments in the same index. Plugins such as Germanized add their fields here.
+const fallbackProductFields = ['categories', 'tags', 'brands'].map((field) => ({ scope: 'product', field, multiple: true }))
+function productTermFields(routes) {
+  const fields = []
+  for (const [path, value] of Object.entries(routes)) {
+    const scope = /^\/wc\/v3\/products\/\(\?P<id>[^)]*\)$/.test(path) ? 'product'
+      : /^\/wc\/v3\/products\/\(\?P<product_id>[^)]*\)\/variations\/\(\?P<id>[^)]*\)$/.test(path) ? 'variation' : null
+    const update = scope && Array.isArray(value?.endpoints) ? value.endpoints.find((endpoint) => Array.isArray(endpoint?.methods) && endpoint.methods.includes('PUT')) : null
+    if (!update?.args || typeof update.args !== 'object' || Array.isArray(update.args)) continue
+    for (const [field, arg] of Object.entries(update.args)) {
+      const properties = (arg?.type === 'array' ? arg.items?.properties : arg?.type === 'object' ? arg.properties : null) ?? {}
+      const keys = Object.keys(properties)
+      // A term reference has an id and a slug and nothing beyond name/html (excludes images, downloads, per-country lists).
+      if (!/^[a-z0-9_]{1,80}$/.test(field) || !keys.includes('id') || !keys.includes('slug') || keys.some((key) => !['id', 'name', 'slug', 'html'].includes(key))) continue
+      fields.push({ scope, field, multiple: arg.type === 'array' })
+    }
+  }
+  return fields
+}
+
 async function discoverWooTaxonomies(connection, fetcher) {
   let index
   try {
@@ -73,7 +94,7 @@ async function discoverWooTaxonomies(connection, fetcher) {
     index = indexSchema.parse(data)
   } catch (error) {
     if (error instanceof WooError && (error.status === 401 || error.status === 403)) throw error
-    return fallbackSources.map((source) => ({ ...source, args: ['per_page', 'page', 'orderby', 'order'], fields: null, optional: source.taxonomy === 'product_brand' }))
+    return { productFields: fallbackProductFields, sources: fallbackSources.map((source) => ({ ...source, args: ['per_page', 'page', 'orderby', 'order'], fields: null, optional: source.taxonomy === 'product_brand' })) }
   }
   const found = new Map()
   for (const [path, value] of Object.entries(index.routes)) {
@@ -90,7 +111,8 @@ async function discoverWooTaxonomies(connection, fetcher) {
       fields: properties.filter((key) => /^[a-z0-9_]+$/.test(key)).slice(0, 100).join(','),
     })
   }
-  return [...found.values()]
+  const productFields = productTermFields(index.routes)
+  return { productFields: productFields.length ? productFields : fallbackProductFields, sources: [...found.values()] }
 }
 
 // Taxonomies registered with show_in_rest (themes, custom code) appear in wp/v2 even without a WooCommerce controller.
@@ -133,7 +155,7 @@ function toTerm(term, hierarchical) {
 }
 
 async function importTaxonomies(connection, fetcher, onProgress = () => {}) {
-  const [woo, wordpress] = await Promise.all([discoverWooTaxonomies(connection, fetcher), discoverWordPressTaxonomies(connection, fetcher)])
+  const [{ sources: woo, productFields }, wordpress] = await Promise.all([discoverWooTaxonomies(connection, fetcher), discoverWordPressTaxonomies(connection, fetcher)])
   const labels = new Map(wordpress.map((entry) => [entry.slug, decodeEntities(entry.name)]))
   const sources = [...woo]
   for (const entry of wordpress) {
@@ -188,7 +210,7 @@ async function importTaxonomies(connection, fetcher, onProgress = () => {}) {
     completed++
   }
   progress('Speichern')
-  return { shopUrl: normalizeUrl(connection.url), importedAt: new Date().toISOString(), taxonomies }
+  return { shopUrl: normalizeUrl(connection.url), importedAt: new Date().toISOString(), taxonomies, productFields }
 }
 
 module.exports = { decodeEntities, importTaxonomies, termSchema, toTerm }

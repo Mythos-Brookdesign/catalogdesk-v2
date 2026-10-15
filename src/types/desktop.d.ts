@@ -12,7 +12,18 @@ export type LocalProduct = {
   productType: string
   payload: Record<string, unknown>
   terms: { taxonomy: string; label: string; name: string }[]
+  changeState: 'pending' | 'failed' | 'conflict' | null
+  changeError: string | null
+  changes: Record<string, unknown> | null
+  base: Record<string, unknown> | null
+  remote: Record<string, unknown> | null
 }
+export type ProductChangeCounts = { pending: number; failed: number; conflict: number }
+export type ProductTermField = { scope: 'product' | 'variation'; field: string; multiple: boolean; taxonomy: string; label: string; hierarchical: boolean; terms: { id: number; name: string; path: string; depth: number }[] }
+export type ProductEditorOptions = { termFields: ProductTermField[]; shippingClasses: { slug: string; name: string }[] }
+export type ProductChange = { productId: number; values: Record<string, unknown>; terms: Record<string, number[] | number> }
+export type ProductSyncResult = { synced: number; failed: number; conflicts: number; offline: boolean; counts: ProductChangeCounts }
+export type ProductChangeResult = { queued: boolean; sync: ProductSyncResult | null; outcome: 'success' | 'failure' | 'conflict' | null; conflicts: string[]; error: string | null }
 
 export type WorkspaceSummary = {
   shopCount: number
@@ -38,6 +49,7 @@ export type ProductPage = {
   page: number
   pageSize: number
   currency?: string | null
+  changeCounts?: ProductChangeCounts
 }
 
 export type CatalogUser = {
@@ -137,6 +149,12 @@ declare global {
       listProducts: (query?: ProductQuery) => Promise<ProductPage>
       importProducts: () => Promise<UserResult<WorkspaceSummary & { relations: number; unresolved: number }>>
       onProductImportProgress: (listener: (progress: ProductImportProgress) => void) => () => void
+      changeProduct: (change: ProductChange) => Promise<UserResult<ProductChangeResult>>
+      syncProducts: (retryFailed?: boolean) => Promise<UserResult<ProductSyncResult>>
+      discardProductChange: (productId: number) => Promise<UserResult<boolean>>
+      resolveProductConflict: (resolution: { productId: number; name: string; resolutions: Record<string, 'mine' | 'shop'> }) => Promise<UserResult<ProductSyncResult | null>>
+      productEditorOptions: () => Promise<UserResult<ProductEditorOptions>>
+      onProductsChanged: (listener: () => void) => () => void
       importTaxonomies: () => Promise<UserResult<TaxonomyOverview>>
       taxonomyOverview: () => Promise<UserResult<TaxonomyOverview>>
       listTaxonomyTerms: (query: TaxonomyTermQuery) => Promise<UserResult<TaxonomyTermPage>>
