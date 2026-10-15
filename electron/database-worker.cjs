@@ -25,6 +25,14 @@ const operations = new Set([
   'replaceTaxonomies',
   'taxonomyOverview',
   'listTaxonomyTerms',
+  'taxonomyTermOptions',
+  'taxonomyChangeCounts',
+  'queueTaxonomyChange',
+  'discardTaxonomyChange',
+  'retryTaxonomyChanges',
+  'pendingTaxonomyChanges',
+  'completeTaxonomyChange',
+  'failTaxonomyChange',
   'close',
 ])
 parentPort.on('message', ({ id, operation, payload }) => {
@@ -35,7 +43,7 @@ parentPort.on('message', ({ id, operation, payload }) => {
     parentPort.postMessage({ id, result })
     if (operation === 'close') parentPort.close()
   } catch (error) {
-    const safe = ['Unbekannte', 'Mindestens ein Administrator', 'Benutzer wurde nicht gefunden', 'Passwort erforderlich'].some((prefix) => error.message?.startsWith(prefix))
+    const safe = ['Unbekannte', 'Mindestens ein Administrator', 'Benutzer wurde nicht gefunden', 'Passwort erforderlich', 'Taxonomie wurde', 'Diese Taxonomie', 'Begriff', 'Uebergeordneter Begriff', 'Ein Begriff', 'Der Slug', 'Aenderung wurde'].some((prefix) => error.message?.startsWith(prefix))
     const fallback = operation === 'saveUser' || operation === 'createInitialAdmin'
       ? 'Datenbankoperation fehlgeschlagen. Benutzername oder E-Mail eventuell bereits vergeben.'
       : 'Datenbankoperation fehlgeschlagen.'

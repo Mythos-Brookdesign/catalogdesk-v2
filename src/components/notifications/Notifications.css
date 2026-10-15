@@ -1,0 +1,25 @@
+.notifications { position: fixed; bottom: 20px; right: 20px; z-index: 50; display: grid; gap: 10px; width: min(380px, calc(100vw - 32px)); pointer-events: none; }
+.notification {
+  --tone: var(--accent); --tone-soft: var(--green-soft);
+  position: relative; overflow: hidden; display: grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items: start; gap: 11px;
+  padding: 13px 12px 15px 14px; border: 1px solid var(--line); border-left: 3px solid var(--tone); border-radius: 6px;
+  background: var(--surface); color: var(--ink); box-shadow: 0 10px 28px #0f1a141f, 0 2px 6px #0f1a1414;
+  pointer-events: auto; animation: notification-in .22s ease-out;
+}
+.notification.success { --tone: var(--green); --tone-soft: var(--green-soft); }
+.notification.info { --tone: var(--accent); --tone-soft: var(--surface-alt); }
+.notification.warning { --tone: var(--amber); --tone-soft: var(--amber-soft); }
+.notification.error { --tone: var(--red); --tone-soft: var(--red-soft); }
+.notification-icon { color: var(--tone); margin-top: 1px; }
+.notification-text { display: grid; gap: 3px; min-width: 0; font-size: 12px; line-height: 1.45; overflow-wrap: anywhere; }
+.notification-text strong { font: 650 13px/1.35 'Manrope Variable', sans-serif; }
+.notification-text span { color: var(--muted); }
+.notification-close { display: grid; place-items: center; width: 24px; height: 24px; margin: -3px -3px 0 0; border: 0; border-radius: 4px; background: transparent; color: var(--muted); }
+.notification-close:hover { background: var(--surface-hover); color: var(--ink); }
+.notification-timer { position: absolute; left: 0; bottom: 0; height: 3px; width: 100%; background: var(--tone); opacity: .35; transform-origin: left; animation: notification-timer linear forwards; }
+.notification:hover .notification-timer, .notification:focus-within .notification-timer { animation-play-state: paused; }
+[data-theme='dark'] .notification { box-shadow: 0 10px 28px #0006; }
+@keyframes notification-in { from { opacity: 0; transform: translateY(8px) scale(.98); } }
+@keyframes notification-timer { from { transform: scaleX(1); } to { transform: scaleX(0); } }
+@media (prefers-reduced-motion: reduce) { .notification { animation: none; } }
+@media (max-width: 600px) { .notifications { bottom: 16px; right: 16px; } }

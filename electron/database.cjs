@@ -62,6 +62,24 @@ const taxonomyTermsQuerySchema = z.object({
   page: z.number().int().min(0).max(1_000_000).default(0),
   pageSize: z.number().int().min(1).max(200).default(100),
 }).strict()
+const termFieldsSchema = z.object({
+  name: z.string().trim().min(1).max(200),
+  slug: z.string().trim().max(200).default(''),
+  parent: z.number().int().min(-Number.MAX_SAFE_INTEGER).max(Number.MAX_SAFE_INTEGER).default(0),
+  description: z.string().max(10_000).default(''),
+}).strict()
+const termChangeSchema = z.object({
+  shopUrl: shopUrlSchema,
+  taxonomy: z.string().min(1).max(200),
+  operation: z.enum(['create', 'update', 'delete']),
+  termId: z.number().int().min(-Number.MAX_SAFE_INTEGER).max(Number.MAX_SAFE_INTEGER).optional(),
+  fields: termFieldsSchema.optional(),
+}).strict()
+const termRefSchema = z.object({ shopUrl: shopUrlSchema, taxonomy: z.string().min(1).max(200), termId: z.number().int().min(-Number.MAX_SAFE_INTEGER).max(Number.MAX_SAFE_INTEGER) }).strict()
+const syncedTermSchema = z.object({
+  id: z.number().int().positive(), name: z.string().max(1000), slug: z.string().max(1000),
+  parentId: z.number().int().nonnegative(), count: z.number().int().nonnegative(), menuOrder: z.number().int(), payload: z.record(z.string(), z.unknown()),
+}).strict()
 const usernameSchema = z.string().trim().min(3).max(32).regex(/^[A-Za-z0-9._-]+$/)
 const newAdminSchema = z.object({
   firstName: z.string().trim().min(1).max(80),
@@ -87,7 +105,7 @@ function openDatabase(filename) {
     database.exec('PRAGMA busy_timeout = 5000; PRAGMA foreign_keys = ON; PRAGMA journal_mode = WAL; PRAGMA synchronous = FULL;')
     database.exec('BEGIN IMMEDIATE')
     const version = database.prepare('PRAGMA user_version').get().user_version
-    if (version > 7) throw new Error('Database schema is newer than this app.')
+    if (version > 8) throw new Error('Database schema is newer than this app.')
     if (version < 1) {
       database.exec(`
         CREATE TABLE shops (
@@ -244,6 +262,25 @@ function openDatabase(filename) {
         DROP TABLE taxonomies_v6;
         PRAGMA user_version = 7;`)
     }
+    if (version < 8) {
+      // Outbox for term edits: one row per term, sent to WooCommerce immediately or after the connection returns.
+      // term_ref is the WooCommerce term ID, or -id for terms created locally that the shop has not confirmed yet.
+      database.exec(`CREATE TABLE IF NOT EXISTS taxonomy_changes (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          shop_url TEXT NOT NULL,
+          taxonomy TEXT NOT NULL,
+          term_ref INTEGER NOT NULL,
+          operation TEXT NOT NULL CHECK(operation IN ('create', 'update', 'delete')),
+          payload TEXT NOT NULL CHECK(json_valid(payload)),
+          state TEXT NOT NULL DEFAULT 'pending' CHECK(state IN ('pending', 'failed')),
+          error TEXT,
+          revision INTEGER NOT NULL DEFAULT 0,
+          created_at TEXT NOT NULL,
+          updated_at TEXT NOT NULL,
+          UNIQUE(shop_url, taxonomy, term_ref)
+        ) STRICT;
+        PRAGMA user_version = 8;`)
+    }
     database.exec('COMMIT')
   } catch (error) {
     if (database.isTransaction) database.exec('ROLLBACK')
@@ -253,6 +290,70 @@ function openDatabase(filename) {
 
   // Taxonomy imports create a shop row too; only shops with products count as catalog imports.
   const catalogShop = 'EXISTS (SELECT 1 FROM products WHERE products.shop_url = shops.shop_url)'
+
+  // Shop terms with queued edits applied, plus locally created terms (negative IDs) that wait for the shop.
+  const mergedTerms = `merged(term_id, name, slug, parent_id, product_count, menu_order, description, state, change_state, error) AS (
+      SELECT t.term_id,
+        CASE WHEN c.operation = 'update' THEN json_extract(c.payload, '$.name') ELSE t.name END,
+        CASE WHEN c.operation = 'update' THEN json_extract(c.payload, '$.slug') ELSE t.slug END,
+        CASE WHEN c.operation = 'update' THEN json_extract(c.payload, '$.parent') ELSE t.parent_id END,
+        t.product_count, t.menu_order,
+        CASE WHEN c.operation = 'update' THEN json_extract(c.payload, '$.description') ELSE coalesce(json_extract(t.payload, '$.description'), '') END,
+        coalesce(c.operation, 'clean'), c.state, c.error
+      FROM taxonomy_terms t LEFT JOIN taxonomy_changes c ON c.shop_url = t.shop_url AND c.taxonomy = t.taxonomy AND c.term_ref = t.term_id
+      WHERE t.shop_url = ?1 AND t.taxonomy = ?2
+      UNION ALL
+      SELECT c.term_ref, json_extract(c.payload, '$.name'), json_extract(c.payload, '$.slug'), json_extract(c.payload, '$.parent'), 0, 0,
+        json_extract(c.payload, '$.description'), 'create', c.state, c.error
+      FROM taxonomy_changes c WHERE c.shop_url = ?1 AND c.taxonomy = ?2 AND c.operation = 'create'
+    )`
+
+  function queryTerms(shopUrl, taxonomy, hierarchical, query, limit, offset) {
+    // Hierarchical terms are ordered as a tree: parents first, children by name below them.
+    const tree = `WITH RECURSIVE ${mergedTerms}, tree(term_id, path, sort_key, depth) AS (
+        SELECT m.term_id, m.name, lower(m.name) || char(2) || printf('%020d', m.term_id), 0 FROM merged m
+        WHERE m.parent_id = 0 OR ?3 = 0 OR NOT EXISTS (SELECT 1 FROM merged p WHERE p.term_id = m.parent_id)
+        UNION ALL
+        SELECT c.term_id, tree.path || ' › ' || c.name, tree.sort_key || char(1) || lower(c.name) || char(2) || printf('%020d', c.term_id), tree.depth + 1
+        FROM merged c JOIN tree ON c.parent_id = tree.term_id
+        WHERE ?3 = 1 AND tree.depth < 50
+      )`
+    const filter = query ? `AND (m.name LIKE ?4 ESCAPE '\\' OR m.slug LIKE ?4 ESCAPE '\\')` : ''
+    const values = [shopUrl, taxonomy, hierarchical, ...(query ? [`%${query.replace(/[\\%_]/g, '\\$&')}%`] : [])]
+    const from = `FROM tree JOIN merged m ON m.term_id = tree.term_id WHERE 1 = 1 ${filter}`
+    const total = database.prepare(`${tree} SELECT COUNT(*) AS total ${from}`).get(...values).total
+    const terms = database.prepare(`${tree} SELECT m.term_id AS id, m.name, m.slug, m.parent_id AS parentId, m.product_count AS count, m.menu_order AS menuOrder,
+        m.description, m.state, m.change_state AS changeState, m.error, tree.path, tree.depth
+      ${from} ORDER BY ${hierarchical ? 'tree.sort_key' : 'm.name COLLATE NOCASE, m.term_id'} LIMIT ${limit} OFFSET ${offset}`).all(...values)
+    return { terms, total }
+  }
+
+  function editableTaxonomy(shopUrl, taxonomy) {
+    const entry = database.prepare('SELECT hierarchical, available, route FROM taxonomies WHERE shop_url = ? AND taxonomy = ?').get(shopUrl, taxonomy)
+    if (!entry) throw new Error('Taxonomie wurde nicht gefunden. Bitte Taxonomien neu importieren.')
+    // Only WooCommerce routes accept the API keys for writes; wp/v2 would need a WordPress login.
+    if (!entry.available || !entry.route.startsWith('wc/v3/')) throw new Error('Diese Taxonomie kann in CatalogDesk nur gelesen werden.')
+    return entry
+  }
+
+  // Children of a removed term move one level up, as WordPress does when a parent term is deleted; also maps
+  // local IDs to shop IDs. Internal bookkeeping, so the revision (which tracks user edits) stays unchanged.
+  function reparentQueued(shopUrl, taxonomy, from, to) {
+    database.prepare(`UPDATE taxonomy_changes SET payload = json_set(payload, '$.parent', ?)
+      WHERE shop_url = ? AND taxonomy = ? AND operation IN ('create', 'update') AND json_extract(payload, '$.parent') = ?`).run(to, shopUrl, taxonomy, from)
+  }
+
+  function transaction(action) {
+    database.exec('BEGIN IMMEDIATE')
+    try {
+      const result = action()
+      database.exec('COMMIT')
+      return result
+    } catch (error) {
+      if (database.isTransaction) database.exec('ROLLBACK')
+      throw error
+    }
+  }
 
   function taxonomyShop(shopUrl) {
     return shopUrl ?? database.prepare('SELECT shop_url FROM taxonomies ORDER BY imported_at DESC LIMIT 1').get()?.shop_url ?? null
@@ -435,6 +536,9 @@ function openDatabase(filename) {
       const unreadable = new Set(parsed.taxonomies.filter((entry) => !entry.available).map((entry) => entry.taxonomy))
       database.exec('BEGIN IMMEDIATE')
       try {
+        // Terms with queued edits stay until the edit is synchronized or discarded.
+        for (const { taxonomy, termRef } of database.prepare('SELECT taxonomy, term_ref AS termRef FROM taxonomy_changes WHERE shop_url = ? AND term_ref > 0').all(parsed.shopUrl))
+          imported.add(`${taxonomy}\u0000${termRef}`)
         database.prepare('INSERT INTO shops (shop_url, imported_at) VALUES (?, ?) ON CONFLICT(shop_url) DO NOTHING').run(parsed.shopUrl, parsed.importedAt)
         const deleteRelations = database.prepare('DELETE FROM product_taxonomies WHERE shop_url = ? AND taxonomy = ? AND term_id = ?')
         const deleteTerm = database.prepare('DELETE FROM taxonomy_terms WHERE shop_url = ? AND taxonomy = ? AND term_id = ?')
@@ -464,10 +568,14 @@ function openDatabase(filename) {
       const shopUrl = taxonomyShop(parsed.shopUrl)
       if (!shopUrl) return { shopUrl: null, importedAt: null, taxonomies: [] }
       const taxonomies = database.prepare(`SELECT t.taxonomy, t.kind, t.label, t.route, t.hierarchical, t.available, t.attribute, t.imported_at AS importedAt,
-          (SELECT COUNT(*) FROM taxonomy_terms terms WHERE terms.shop_url = t.shop_url AND terms.taxonomy = t.taxonomy) AS termCount
+          (SELECT COUNT(*) FROM taxonomy_terms terms WHERE terms.shop_url = t.shop_url AND terms.taxonomy = t.taxonomy)
+            + (SELECT COUNT(*) FROM taxonomy_changes c WHERE c.shop_url = t.shop_url AND c.taxonomy = t.taxonomy AND c.operation = 'create')
+            - (SELECT COUNT(*) FROM taxonomy_changes c WHERE c.shop_url = t.shop_url AND c.taxonomy = t.taxonomy AND c.operation = 'delete') AS termCount,
+          (SELECT COUNT(*) FROM taxonomy_changes c WHERE c.shop_url = t.shop_url AND c.taxonomy = t.taxonomy AND c.state = 'pending') AS pendingCount,
+          (SELECT COUNT(*) FROM taxonomy_changes c WHERE c.shop_url = t.shop_url AND c.taxonomy = t.taxonomy AND c.state = 'failed') AS failedCount
         FROM taxonomies t WHERE t.shop_url = ? ORDER BY t.position`).all(shopUrl)
-        .map((row) => ({ ...row, hierarchical: row.hierarchical === 1, available: row.available === 1, attribute: row.attribute ? JSON.parse(row.attribute) : null }))
-      return { shopUrl, importedAt: taxonomies[0]?.importedAt ?? null, taxonomies }
+        .map((row) => ({ ...row, hierarchical: row.hierarchical === 1, available: row.available === 1, editable: row.available === 1 && row.route.startsWith('wc/v3/'), attribute: row.attribute ? JSON.parse(row.attribute) : null }))
+      return { shopUrl, importedAt: taxonomies[0]?.importedAt ?? null, taxonomies, ...this.taxonomyChangeCounts({ shopUrl }) }
     },
     listTaxonomyTerms(input) {
       const parsed = taxonomyTermsQuerySchema.parse(input)
@@ -476,23 +584,124 @@ function openDatabase(filename) {
       if (!shopUrl) return empty
       const taxonomy = database.prepare('SELECT hierarchical FROM taxonomies WHERE shop_url = ? AND taxonomy = ?').get(shopUrl, parsed.taxonomy)
       if (!taxonomy) return empty
-      // Hierarchical terms are ordered as a tree: parents first, children by name below them.
-      const tree = `WITH RECURSIVE tree(term_id, path, sort_key, depth) AS (
-          SELECT t.term_id, t.name, lower(t.name) || char(2) || printf('%012d', t.term_id), 0 FROM taxonomy_terms t
-          WHERE t.shop_url = ?1 AND t.taxonomy = ?2 AND (t.parent_id = 0 OR ?3 = 0 OR NOT EXISTS (
-            SELECT 1 FROM taxonomy_terms p WHERE p.shop_url = t.shop_url AND p.taxonomy = t.taxonomy AND p.term_id = t.parent_id))
-          UNION ALL
-          SELECT c.term_id, tree.path || ' › ' || c.name, tree.sort_key || char(1) || lower(c.name) || char(2) || printf('%012d', c.term_id), tree.depth + 1
-          FROM taxonomy_terms c JOIN tree ON c.parent_id = tree.term_id
-          WHERE ?3 = 1 AND c.shop_url = ?1 AND c.taxonomy = ?2 AND tree.depth < 50
-        )`
-      const filter = parsed.query ? `AND (t.name LIKE ?4 ESCAPE '\\' OR t.slug LIKE ?4 ESCAPE '\\')` : ''
-      const values = [shopUrl, parsed.taxonomy, taxonomy.hierarchical, ...(parsed.query ? [`%${parsed.query.replace(/[\\%_]/g, '\\$&')}%`] : [])]
-      const from = `FROM tree JOIN taxonomy_terms t ON t.shop_url = ?1 AND t.taxonomy = ?2 AND t.term_id = tree.term_id WHERE 1 = 1 ${filter}`
-      const total = database.prepare(`${tree} SELECT COUNT(*) AS total ${from}`).get(...values).total
-      const terms = database.prepare(`${tree} SELECT t.term_id AS id, t.name, t.slug, t.parent_id AS parentId, t.product_count AS count, t.menu_order AS menuOrder, tree.path, tree.depth
-        ${from} ORDER BY ${taxonomy.hierarchical ? 'tree.sort_key' : 't.name COLLATE NOCASE, t.term_id'} LIMIT ${parsed.pageSize} OFFSET ${parsed.page * parsed.pageSize}`).all(...values)
-      return { terms, total, page: parsed.page, pageSize: parsed.pageSize }
+      return { ...queryTerms(shopUrl, parsed.taxonomy, taxonomy.hierarchical, parsed.query, parsed.pageSize, parsed.page * parsed.pageSize), page: parsed.page, pageSize: parsed.pageSize }
+    },
+    taxonomyTermOptions(input) {
+      const parsed = taxonomyTermsQuerySchema.pick({ shopUrl: true, taxonomy: true }).strict().parse(input)
+      const shopUrl = taxonomyShop(parsed.shopUrl)
+      const taxonomy = shopUrl && database.prepare('SELECT hierarchical FROM taxonomies WHERE shop_url = ? AND taxonomy = ?').get(shopUrl, parsed.taxonomy)
+      if (!taxonomy) return []
+      return queryTerms(shopUrl, parsed.taxonomy, taxonomy.hierarchical, '', 20_000, 0).terms
+        .filter((term) => term.state !== 'delete').map(({ id, path, depth }) => ({ id, path, depth }))
+    },
+    taxonomyChangeCounts(input = {}) {
+      const parsed = z.object({ shopUrl: shopUrlSchema.optional() }).strict().parse(input)
+      const rows = database.prepare(`SELECT state, COUNT(*) AS count FROM taxonomy_changes ${parsed.shopUrl ? 'WHERE shop_url = ?' : ''} GROUP BY state`).all(...(parsed.shopUrl ? [parsed.shopUrl] : []))
+      return { pendingChanges: rows.find((row) => row.state === 'pending')?.count ?? 0, failedChanges: rows.find((row) => row.state === 'failed')?.count ?? 0 }
+    },
+    queueTaxonomyChange(input) {
+      const parsed = termChangeSchema.parse(input)
+      return transaction(() => {
+        const { shopUrl, taxonomy, operation, termId } = parsed
+        const entry = editableTaxonomy(shopUrl, taxonomy)
+        const terms = new Map(database.prepare(`WITH ${mergedTerms} SELECT term_id AS id, name, slug, parent_id AS parentId, state FROM merged`).all(shopUrl, taxonomy).map((term) => [term.id, term]))
+        const now = new Date().toISOString()
+        const term = termId === undefined ? null : terms.get(termId)
+        if (operation !== 'create' && (!term || term.state === 'delete')) throw new Error('Begriff wurde nicht gefunden.')
+        const existing = term ? database.prepare('SELECT id, operation FROM taxonomy_changes WHERE shop_url = ? AND taxonomy = ? AND term_ref = ?').get(shopUrl, taxonomy, termId) : null
+
+        if (operation === 'delete') {
+          if (termId < 0) {
+            reparentQueued(shopUrl, taxonomy, termId, term.parentId)
+            database.prepare('DELETE FROM taxonomy_changes WHERE id = ?').run(existing.id)
+          } else if (existing) {
+            database.prepare("UPDATE taxonomy_changes SET operation = 'delete', payload = '{}', state = 'pending', error = NULL, revision = revision + 1, updated_at = ? WHERE id = ?").run(now, existing.id)
+          } else {
+            database.prepare("INSERT INTO taxonomy_changes (shop_url, taxonomy, term_ref, operation, payload, created_at, updated_at) VALUES (?, ?, ?, 'delete', '{}', ?, ?)").run(shopUrl, taxonomy, termId, now, now)
+          }
+          return { termId }
+        }
+
+        if (!parsed.fields) throw new Error('Begriff: Name fehlt.')
+        const fields = { ...parsed.fields, parent: entry.hierarchical ? parsed.fields.parent : 0 }
+        if (operation === 'update' && !fields.slug) fields.slug = term.slug
+        if (fields.parent !== 0 && (!terms.has(fields.parent) || terms.get(fields.parent).state === 'delete'))
+          throw new Error('Uebergeordneter Begriff wurde nicht gefunden.')
+        for (let parent = fields.parent, steps = 0; parent !== 0 && steps < 100; parent = terms.get(parent)?.parentId ?? 0, steps++)
+          if (parent === termId) throw new Error('Ein Begriff kann nicht unter sich selbst eingeordnet werden.')
+        for (const other of terms.values()) {
+          if (other.id === termId || other.state === 'delete') continue
+          if (fields.slug && other.slug.toLowerCase() === fields.slug.toLowerCase()) throw new Error('Der Slug ist bereits vergeben.')
+          if (other.parentId === fields.parent && other.name.toLowerCase() === fields.name.toLowerCase())
+            throw new Error('Ein Begriff mit diesem Namen existiert auf dieser Ebene bereits.')
+        }
+        const payload = JSON.stringify(fields)
+        if (operation === 'create') {
+          const { lastInsertRowid } = database.prepare("INSERT INTO taxonomy_changes (shop_url, taxonomy, term_ref, operation, payload, created_at, updated_at) VALUES (?, ?, 0, 'create', ?, ?, ?)").run(shopUrl, taxonomy, payload, now, now)
+          database.prepare('UPDATE taxonomy_changes SET term_ref = ? WHERE id = ?').run(-Number(lastInsertRowid), lastInsertRowid)
+          return { termId: -Number(lastInsertRowid) }
+        }
+        if (existing) database.prepare("UPDATE taxonomy_changes SET payload = ?, state = 'pending', error = NULL, revision = revision + 1, updated_at = ? WHERE id = ?").run(payload, now, existing.id)
+        else database.prepare("INSERT INTO taxonomy_changes (shop_url, taxonomy, term_ref, operation, payload, created_at, updated_at) VALUES (?, ?, ?, 'update', ?, ?, ?)").run(shopUrl, taxonomy, termId, payload, now, now)
+        return { termId }
+      })
+    },
+    discardTaxonomyChange(input) {
+      const parsed = termRefSchema.parse(input)
+      return transaction(() => {
+        const change = database.prepare('SELECT id, operation, payload FROM taxonomy_changes WHERE shop_url = ? AND taxonomy = ? AND term_ref = ?').get(parsed.shopUrl, parsed.taxonomy, parsed.termId)
+        if (!change) throw new Error('Aenderung wurde nicht gefunden.')
+        if (change.operation === 'create') reparentQueued(parsed.shopUrl, parsed.taxonomy, parsed.termId, JSON.parse(change.payload).parent ?? 0)
+        database.prepare('DELETE FROM taxonomy_changes WHERE id = ?').run(change.id)
+        return true
+      })
+    },
+    retryTaxonomyChanges(input) {
+      const parsed = z.object({ shopUrl: shopUrlSchema }).strict().parse(input)
+      database.prepare("UPDATE taxonomy_changes SET state = 'pending', error = NULL WHERE shop_url = ? AND state = 'failed'").run(parsed.shopUrl)
+      return true
+    },
+    pendingTaxonomyChanges(input) {
+      const parsed = z.object({ shopUrl: shopUrlSchema }).strict().parse(input)
+      return database.prepare(`SELECT c.id, c.taxonomy, c.term_ref AS termRef, c.operation, c.payload, c.revision, t.route, t.hierarchical
+        FROM taxonomy_changes c JOIN taxonomies t ON t.shop_url = c.shop_url AND t.taxonomy = c.taxonomy
+        WHERE c.shop_url = ? AND c.state = 'pending' ORDER BY c.id`).all(parsed.shopUrl)
+        .map((row) => ({ ...row, hierarchical: row.hierarchical === 1, payload: JSON.parse(row.payload) }))
+    },
+    completeTaxonomyChange(input) {
+      const parsed = z.object({ changeId: z.number().int().positive(), revision: z.number().int().nonnegative(), term: syncedTermSchema.nullable() }).strict().parse(input)
+      return transaction(() => {
+        const change = database.prepare('SELECT id, shop_url AS shopUrl, taxonomy, term_ref AS termRef, operation, revision FROM taxonomy_changes WHERE id = ?').get(parsed.changeId)
+        if (!change) return false
+        const { shopUrl, taxonomy, termRef } = change
+        if (parsed.term) {
+          const term = parsed.term
+          database.prepare(`INSERT INTO taxonomy_terms (shop_url, taxonomy, term_id, name, slug, payload, parent_id, product_count, menu_order) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(shop_url, taxonomy, term_id) DO UPDATE SET name = excluded.name, slug = excluded.slug, payload = excluded.payload, parent_id = excluded.parent_id, product_count = excluded.product_count, menu_order = excluded.menu_order`)
+            .run(shopUrl, taxonomy, term.id, term.name, term.slug, JSON.stringify(term.payload), term.parentId, term.count, term.menuOrder)
+          if (termRef < 0) {
+            reparentQueued(shopUrl, taxonomy, termRef, term.id)
+            // Edited again while the request was running: keep the newer edit as an update of the created term.
+            if (change.revision !== parsed.revision) {
+              database.prepare("UPDATE taxonomy_changes SET term_ref = ?, operation = 'update' WHERE id = ?").run(term.id, change.id)
+              return true
+            }
+          }
+        } else {
+          const parent = database.prepare('SELECT parent_id AS parentId FROM taxonomy_terms WHERE shop_url = ? AND taxonomy = ? AND term_id = ?').get(shopUrl, taxonomy, termRef)?.parentId ?? 0
+          database.prepare('UPDATE taxonomy_terms SET parent_id = ? WHERE shop_url = ? AND taxonomy = ? AND parent_id = ?').run(parent, shopUrl, taxonomy, termRef)
+          reparentQueued(shopUrl, taxonomy, termRef, parent)
+          database.prepare('DELETE FROM product_taxonomies WHERE shop_url = ? AND taxonomy = ? AND term_id = ?').run(shopUrl, taxonomy, termRef)
+          database.prepare('DELETE FROM taxonomy_terms WHERE shop_url = ? AND taxonomy = ? AND term_id = ?').run(shopUrl, taxonomy, termRef)
+        }
+        if (change.revision === parsed.revision) database.prepare('DELETE FROM taxonomy_changes WHERE id = ?').run(change.id)
+        return true
+      })
+    },
+    failTaxonomyChange(input) {
+      const parsed = z.object({ changeId: z.number().int().positive(), revision: z.number().int().nonnegative(), error: z.string().max(500) }).strict().parse(input)
+      database.prepare("UPDATE taxonomy_changes SET state = 'failed', error = ? WHERE id = ? AND revision = ?").run(parsed.error, parsed.changeId, parsed.revision)
+      return true
     },
     close() { database.close() },
   }

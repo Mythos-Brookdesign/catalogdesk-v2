@@ -2,6 +2,7 @@ import { StrictMode } from 'react'
 import { createRoot } from 'react-dom/client'
 import './index.css'
 import { AuthGate } from './features/auth/AuthGate'
+import { NotificationProvider } from './components/notifications/NotificationProvider'
 
 async function start() {
   let theme = 'light'
@@ -12,7 +13,9 @@ async function start() {
   document.documentElement.dataset.theme = theme
   createRoot(document.getElementById('root')!).render(
     <StrictMode>
-      <AuthGate />
+      <NotificationProvider>
+        <AuthGate />
+      </NotificationProvider>
     </StrictMode>,
   )
 }

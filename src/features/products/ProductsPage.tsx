@@ -1,7 +1,8 @@
 import { useEffect, useState } from 'react'
-import { Boxes, ChevronDown, CircleAlert, Search, SlidersHorizontal } from 'lucide-react'
+import { Boxes, ChevronDown, Search, SlidersHorizontal } from 'lucide-react'
 import type { ProductPage, ProductQuery, ProductSummary } from './model'
 import type { WorkspaceSummary } from '../../types/desktop'
+import { useNotify } from '../../components/notifications/notifications'
 import './ProductsPage.css'
 
 type DesktopApi = NonNullable<Window['catalogDesk']>
@@ -12,7 +13,8 @@ export function ProductsPage({ desktop }: { desktop?: DesktopApi }) {
   const [query, setQuery] = useState('')
   const [type, setType] = useState<ProductQuery['type']>('all')
   const [selected, setSelected] = useState<ProductSummary | null>(null)
-  const [error, setError] = useState('')
+  const notify = useNotify()
+  const [failed, setFailed] = useState(false)
 
   useEffect(() => {
     if (!desktop) return
@@ -22,13 +24,15 @@ export function ProductsPage({ desktop }: { desktop?: DesktopApi }) {
         if (cancelled) return
         setSummary(workspace)
         setPage(products)
-        setError('')
+        setFailed(false)
       })
       .catch((reason) => {
-        if (!cancelled) setError(reason instanceof Error ? reason.message : 'Lokaler Katalog nicht verfuegbar.')
+        if (cancelled) return
+        setFailed(true)
+        notify.error('Katalog nicht geladen', { message: reason instanceof Error ? reason.message : 'Lokaler Katalog nicht verfuegbar.', key: 'products-load' })
       })
     return () => { cancelled = true }
-  }, [desktop, query, type])
+  }, [desktop, query, type, notify])
 
   return (
     <main className="products-page">
@@ -57,7 +61,6 @@ export function ProductsPage({ desktop }: { desktop?: DesktopApi }) {
         </label>
       </section>
 
-      {error && <div className="workspace-error" role="alert"><CircleAlert size={17} />{error}</div>}
       <section className="products-table-wrap" aria-label="Produktliste">
         <div className="products-table-head">
           <span>Produkt</span><span>SKU</span><span>Typ</span><span>Status</span>
@@ -76,7 +79,7 @@ export function ProductsPage({ desktop }: { desktop?: DesktopApi }) {
         ) : (
           <div className="products-empty">
             <Boxes size={25} strokeWidth={1.5} />
-            <h2>{error ? 'Katalog konnte nicht geladen werden' : 'Noch keine Produkte lokal gespeichert'}</h2>
+            <h2>{failed ? 'Katalog konnte nicht geladen werden' : 'Noch keine Produkte lokal gespeichert'}</h2>
             <p>Der Produktbereich ist direkt an SQLite gebunden. Importierte Produkte und Varianten erscheinen hier als Familien mit ihren Zuordnungen.</p>
           </div>
         )}

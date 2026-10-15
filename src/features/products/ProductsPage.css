@@ -27,7 +27,6 @@
 .products-empty svg { color: var(--accent); }
 .products-empty h2 { margin: 0; color: var(--ink); font-size: 16px; }
 .products-empty p { max-width: 430px; color: var(--muted); font-size: 12px; line-height: 1.6; }
-.workspace-error { display: flex; gap: 8px; align-items: center; color: var(--red); font-size: 12px; }
 .product-inspector { display: grid; gap: 6px; padding: 14px 0; border-top: 1px solid var(--line); color: var(--muted); font-size: 11px; }
 .product-inspector strong { color: var(--ink); font-size: 14px; }
 .product-inspector code { width: fit-content; color: var(--muted); }

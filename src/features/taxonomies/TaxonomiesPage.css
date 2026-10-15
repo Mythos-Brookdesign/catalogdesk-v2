@@ -2,7 +2,6 @@
 .taxonomies-heading { display: flex; justify-content: space-between; align-items: flex-start; gap: 16px; }
 .taxonomies-heading p { margin-top: 7px; color: var(--muted); font-size: 12px; overflow-wrap: anywhere; }
 .taxonomies-progress { display: flex; align-items: center; gap: 8px; color: var(--muted); font-size: 12px; }
-.taxonomies-notice { color: var(--green); font-size: 12px; }
 .taxonomies-layout { display: grid; grid-template-columns: 220px minmax(0, 1fr); gap: 20px; align-items: start; }
 .taxonomies-list { display: grid; align-items: start; gap: 18px; }
 .taxonomies-list > div { display: grid; align-content: start; gap: 3px; }
@@ -32,3 +31,26 @@
   .taxonomies-list { grid-template-columns: repeat(auto-fill, minmax(160px, 1fr)); }
 }
 @media (max-width: 600px) { .taxonomies-heading { flex-direction: column; } .taxonomy-terms .search-box { max-width: none; } }
+.taxonomy-terms-tools { display: flex; align-items: center; gap: 10px; flex: 1 1 320px; justify-content: flex-end; flex-wrap: wrap; }
+.taxonomy-sync-bar { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; padding: 10px 14px; border: 1px solid var(--line); border-radius: 5px; background: var(--amber-soft); color: var(--amber); font-size: 12px; }
+.taxonomy-sync-bar span { margin-right: auto; }
+.taxonomy-term-name { display: inline-flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.term-state { border-radius: 3px; padding: 2px 6px; font-size: 9px; font-weight: 600; }
+.term-state.create { color: var(--green); background: var(--green-soft); }
+.term-state.update { color: var(--amber); background: var(--amber-soft); }
+.term-state.delete, .term-state.failed { color: var(--red); background: var(--red-soft); }
+.term-error { display: block; margin-top: 4px; color: var(--red); font-size: 11px; }
+.taxonomy-table tr.deleted td:not(.taxonomy-actions) { color: var(--muted); }
+.taxonomy-table tr.deleted .term-label { text-decoration: line-through; }
+.taxonomy-table .taxonomy-actions { white-space: nowrap; text-align: right; }
+.taxonomy-actions .icon-button { display: inline-grid; vertical-align: middle; }
+.taxonomy-actions .icon-button + .icon-button { margin-left: 4px; }
+.taxonomy-modal-backdrop { position: fixed; inset: 0; z-index: 10; display: grid; place-items: center; padding: 20px; background: #17251e99; }
+.taxonomy-modal { width: min(100%, 560px); max-height: calc(100dvh - 40px); overflow-y: auto; display: grid; gap: 18px; padding: 24px; border: 1px solid var(--line); border-radius: 6px; background: var(--surface); color: var(--ink); }
+.taxonomy-modal > header { display: flex; justify-content: space-between; align-items: center; gap: 12px; }
+.taxonomy-modal h2 { font-size: 18px; }
+.taxonomy-modal p { font-size: 12px; line-height: 1.6; color: var(--muted); }
+.taxonomy-modal form, .taxonomy-modal fieldset { display: grid; gap: 15px; border: 0; padding: 0; margin: 0; min-width: 0; }
+.taxonomy-modal select, .taxonomy-modal textarea { padding: 9px; border: 1px solid var(--line); border-radius: 4px; background: var(--surface); color: var(--ink); font: inherit; font-size: 13px; }
+.taxonomy-modal textarea { resize: vertical; }
+.taxonomy-modal footer { display: flex; justify-content: flex-end; gap: 10px; flex-wrap: wrap; }

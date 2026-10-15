@@ -44,51 +44,69 @@ function resolveConnection(input, stored) {
   return connection.data
 }
 
-// Read-only GET below wp-json/ with timeout, size bound and no redirects. Errors never contain secrets.
+async function readJson(response, maxBytes) {
+  const reader = response.body?.getReader()
+  if (!reader) throw new WooError('Die API-Antwort ist leer.')
+  const chunks = []
+  let bytes = 0
+  while (true) {
+    const { done, value } = await reader.read()
+    if (done) break
+    bytes += value.byteLength
+    if (bytes > maxBytes) { await reader.cancel(); throw new WooError('Die API-Antwort ist zu gross.') }
+    chunks.push(Buffer.from(value))
+  }
+  try { return JSON.parse(Buffer.concat(chunks).toString('utf8')) }
+  catch { throw new WooError('Die Antwort entspricht nicht dem WooCommerce-Format.') }
+}
+
+// WordPress error bodies carry a readable message (e.g. duplicate term names); it never contains the API keys.
+async function shopMessage(response) {
+  try {
+    if (!response.headers.get('content-type')?.toLowerCase().includes('application/json')) return null
+    const body = await readJson(response, 16 * 1024)
+    const message = typeof body?.message === 'string' ? body.message.replace(/<[^>]*>/g, '').replace(/\s+/g, ' ').trim().slice(0, 300) : ''
+    return message || null
+  } catch { return null }
+}
+
+// GET/POST/PUT/DELETE below wp-json/ with timeout, size bound and no redirects. Errors never contain secrets.
 // Requests outside wc/ are sent without credentials: WordPress would reject WooCommerce keys there.
-async function wooRequest(connection, route, params, fetcher, { maxBytes = 64 * 1024, timeoutMs = 15_000 } = {}) {
+// Network failures and timeouts are flagged with `offline` so callers can queue work for later.
+async function wooRequest(connection, route, params, fetcher, { maxBytes = 64 * 1024, timeoutMs = 15_000, method = 'GET', body } = {}) {
   const parsed = connectionSchema.safeParse(connection)
   if (!parsed.success) throw new WooError('Ungueltige Shopverbindung.')
   const { url, consumerKey, consumerSecret } = parsed.data
   const endpoint = new URL(`wp-json/${route}`, normalizeUrl(url))
   endpoint.search = new URLSearchParams(params).toString()
   const authenticated = route === 'wc/v3' || route.startsWith('wc/v3/')
+  const headers = { Accept: 'application/json' }
+  if (authenticated) headers.Authorization = `Basic ${Buffer.from(`${consumerKey}:${consumerSecret}`).toString('base64')}`
+  if (body !== undefined) headers['Content-Type'] = 'application/json'
   const controller = new AbortController()
   const timeout = setTimeout(() => controller.abort(), timeoutMs)
   try {
     const response = await fetcher(endpoint.toString(), {
-      method: 'GET',
-      headers: authenticated ? { Authorization: `Basic ${Buffer.from(`${consumerKey}:${consumerSecret}`).toString('base64')}`, Accept: 'application/json' } : { Accept: 'application/json' },
+      method, headers, ...(body !== undefined ? { body: JSON.stringify(body) } : {}),
       credentials: 'omit', redirect: 'error', cache: 'no-store', signal: controller.signal,
     })
     if (!response.ok) {
-      await response.body?.cancel()
+      const message = await shopMessage(response)
+      await response.body?.cancel().catch(() => {})
       throw new WooError(response.status === 401 || response.status === 403
-        ? 'Zugriff verweigert. API-Schluessel und Leserechte pruefen.'
-        : `WooCommerce antwortet mit HTTP ${response.status}. Shopadresse und REST-API pruefen.`, response.status)
+        ? `Zugriff verweigert. API-Schluessel und ${method === 'GET' ? 'Leserechte' : 'Schreibrechte'} pruefen.${message ? ` (${message})` : ''}`
+        : message ?? `WooCommerce antwortet mit HTTP ${response.status}. Shopadresse und REST-API pruefen.`, response.status)
     }
     if (!response.headers.get('content-type')?.toLowerCase().includes('application/json')) {
       await response.body?.cancel()
       throw new WooError('Der Shop liefert kein JSON.')
     }
-    const reader = response.body?.getReader()
-    if (!reader) throw new WooError('Die API-Antwort ist leer.')
-    const chunks = []
-    let bytes = 0
-    while (true) {
-      const { done, value } = await reader.read()
-      if (done) break
-      bytes += value.byteLength
-      if (bytes > maxBytes) { await reader.cancel(); throw new WooError('Die API-Antwort ist zu gross.') }
-      chunks.push(Buffer.from(value))
-    }
-    let data
-    try { data = JSON.parse(Buffer.concat(chunks).toString('utf8')) }
-    catch { throw new WooError('Die Antwort entspricht nicht dem WooCommerce-Format.') }
-    return { data, headers: response.headers }
+    return { data: await readJson(response, maxBytes), headers: response.headers }
   } catch (error) {
     if (error instanceof WooError) throw error
-    throw new WooError(controller.signal.aborted ? 'Zeitlimit erreicht. Der Shop antwortet nicht.' : 'Verbindung fehlgeschlagen. HTTPS-Zertifikat und Erreichbarkeit pruefen. Weiterleitungen sind nicht erlaubt.')
+    const failure = new WooError(controller.signal.aborted ? 'Zeitlimit erreicht. Der Shop antwortet nicht.' : 'Verbindung fehlgeschlagen. HTTPS-Zertifikat und Erreichbarkeit pruefen. Weiterleitungen sind nicht erlaubt.')
+    failure.offline = true
+    throw failure
   } finally { clearTimeout(timeout) }
 }
 

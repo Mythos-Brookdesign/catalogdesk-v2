@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 import { Pencil, Plus, Save, Trash2, X } from 'lucide-react'
 import type { CatalogUser, MenuSection, UserInput } from '../../types/desktop'
+import { useNotify } from '../../components/notifications/notifications'
 import './UsersPage.css'
 
 const sections: [MenuSection, string][] = [
@@ -12,6 +13,7 @@ const emptyUser: UserInput = { firstName: '', lastName: '', email: '', username:
 
 export function UsersPage({ currentUser }: { currentUser?: CatalogUser }) {
   const desktop = window.catalogDesk
+  const notify = useNotify()
   const canManage = currentUser?.role === 'admin'
   const [users, setUsers] = useState<CatalogUser[]>([])
   const [loading, setLoading] = useState(true)
@@ -20,7 +22,6 @@ export function UsersPage({ currentUser }: { currentUser?: CatalogUser }) {
   const [deleting, setDeleting] = useState<CatalogUser | null>(null)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
-  const [notice, setNotice] = useState('')
 
   useEffect(() => {
     if (!desktop) return
@@ -28,13 +29,13 @@ export function UsersPage({ currentUser }: { currentUser?: CatalogUser }) {
     desktop.listUsers().then((result) => {
       if (cancelled) return
       if (result.ok) setUsers(result.value)
-      else setError(result.error)
+      else notify.error('Benutzer nicht geladen', { message: result.error, key: 'users-load' })
       setLoading(false)
     }).catch(() => {
-      if (!cancelled) { setError('Benutzer konnten nicht geladen werden.'); setLoading(false) }
+      if (!cancelled) { notify.error('Benutzer nicht geladen', { message: 'Die lokale Datenbank hat nicht geantwortet.', key: 'users-load' }); setLoading(false) }
     })
     return () => { cancelled = true }
-  }, [desktop])
+  }, [desktop, notify])
 
   async function refresh() {
     const result = await desktop!.listUsers()
@@ -46,26 +47,26 @@ export function UsersPage({ currentUser }: { currentUser?: CatalogUser }) {
     event.preventDefault()
     if (!draft || !desktop || busy || !canManage) return
     if (draft.password !== confirmation) { setError('Die Passwoerter stimmen nicht ueberein.'); return }
-    setBusy(true); setError(''); setNotice('')
+    setBusy(true); setError('')
     try {
       const { password, ...profile } = draft
       const result = await desktop.saveUser({ ...profile, ...(password ? { password } : {}) })
       if (!result.ok) throw new Error(result.error)
       setDraft(null)
       if (result.value !== currentUser?.id) await refresh()
-      setNotice('Benutzer gespeichert.')
+      notify.success(draft.id ? 'Benutzer gespeichert' : 'Benutzer angelegt', { message: `${draft.firstName} ${draft.lastName} (${draft.username})` })
     } catch (reason) { setError(reason instanceof Error ? reason.message : 'Speichern fehlgeschlagen.') }
     finally { setBusy(false) }
   }
 
   async function remove() {
     if (!deleting || !desktop || busy || !canManage) return
-    setBusy(true); setError(''); setNotice('')
+    setBusy(true); setError('')
     try {
       const result = await desktop.deleteUser(deleting.id)
       if (!result.ok) throw new Error(result.error)
       if (deleting.id !== currentUser?.id) await refresh()
-      setDeleting(null); setNotice('Benutzer geloescht.')
+      setDeleting(null); notify.success('Benutzer geloescht', { message: `${deleting.firstName} ${deleting.lastName} (${deleting.username})` })
     } catch (reason) { setError(reason instanceof Error ? reason.message : 'Loeschen fehlgeschlagen.') }
     finally { setBusy(false) }
   }
@@ -73,8 +74,6 @@ export function UsersPage({ currentUser }: { currentUser?: CatalogUser }) {
   const adminCount = users.filter((user) => user.role === 'admin').length
   return <main className="section-page users-page">
     <header className="users-heading"><h1>Benutzer</h1>{canManage && <button className="button primary" disabled={busy} onClick={() => { setDraft({ ...emptyUser }); setConfirmation(''); setError('') }}><Plus size={16} />Benutzer anlegen</button>}</header>
-    {error && !draft && !deleting && <p className="auth-error" role="alert">{error}</p>}
-    {notice && <p role="status">{notice}</p>}
     {loading ? <p role="status">Benutzer werden geladen ...</p> : <div className="users-table-scroll"><table className="users-table"><thead><tr><th>Name</th><th>Benutzername</th><th>E-Mail</th><th>Rolle</th><th>Berechtigungen</th>{canManage && <th>Aktionen</th>}</tr></thead><tbody>{users.map((user) => <tr key={user.id}>
       <td>{user.firstName} {user.lastName}</td><td>{user.username}</td><td>{user.email}</td><td>{user.role === 'admin' ? 'Admin' : 'Mitarbeiter'}</td>
       <td>{user.role === 'admin' ? 'Alle Bereiche' : sections.filter(([key]) => user.permissions.includes(key)).map(([, title]) => title).join(', ') || 'Keine Bereiche'}</td>

@@ -7,6 +7,7 @@ const { createAuthenticator } = require('./auth.cjs')
 const { createShopStore } = require('./shop-store.cjs')
 const { WooError, resolveConnection, testConnection } = require('./shop.cjs')
 const { importTaxonomies } = require('./taxonomies.cjs')
+const { syncTaxonomyChanges } = require('./taxonomy-sync.cjs')
 
 const development = !app.isPackaged && process.argv.includes('--dev')
 const entryUrl = development ? 'http://127.0.0.1:5179/' : 'catalog://app/index.html'
@@ -122,6 +123,56 @@ app.whenReady().then(async () => {
       }
     })
   }
+  const shopFetch = (url, options) => net.fetch(url, options)
+  const databaseCall = (operation, payload) => database.request(operation, payload)
+  const safeTaxonomyError = (error) => error instanceof WooError || /^(Sitzung|Fuer diese|Shopverbindung|Gespeicherte|Kein sicherer|Datenbank|Taxonomie|Diese Taxonomie|Begriff|Uebergeordneter|Ein Begriff|Der Slug|Aenderung|Keine Shopverbindung)/.test(error.message ?? '')
+  async function currentShopUrl() {
+    const saved = await shopStore.summary().catch(() => null)
+    if (!saved) throw new Error('Keine Shopverbindung gespeichert. Bitte zuerst unter Shopverbindung einrichten.')
+    return saved.url
+  }
+  // Sends queued term edits when the shop is reachable. Returns null when another shop action holds the lock.
+  async function runTaxonomySync({ notify = true } = {}) {
+    if (shopOperationRunning || !database) return null
+    const connection = await shopStore.load().catch(() => null)
+    if (!connection) return null
+    if (!net.isOnline()) return { synced: 0, failed: 0, offline: true, ...(await databaseCall('taxonomyChangeCounts', { shopUrl: connection.url })) }
+    shopOperationRunning = true
+    try {
+      const result = await syncTaxonomyChanges(connection, databaseCall, shopFetch)
+      if (notify && (result.synced || result.failed)) mainWindow?.webContents.send('catalog:v2:taxonomies-changed')
+      return result
+    } finally { shopOperationRunning = false }
+  }
+  setInterval(() => { void runTaxonomySync().catch(() => {}) }, 30_000).unref?.()
+  ipcMain.handle('catalog:v2:taxonomies-change', async (event, envelope) => {
+    try {
+      const { payload } = authorize(event, envelope, 'taxonomies')
+      const value = await databaseCall('queueTaxonomyChange', { ...(payload && typeof payload === 'object' ? payload : {}), shopUrl: await currentShopUrl() })
+      return { ok: true, value: { termId: value.termId, sync: await runTaxonomySync({ notify: false }) } }
+    } catch (error) {
+      return { ok: false, error: safeTaxonomyError(error) ? error.message : 'Aenderung konnte nicht gespeichert werden. Eingaben pruefen.' }
+    }
+  })
+  ipcMain.handle('catalog:v2:taxonomies-sync', async (event, envelope) => {
+    try {
+      const { payload } = authorize(event, envelope, 'taxonomies')
+      if (payload?.retryFailed === true) await databaseCall('retryTaxonomyChanges', { shopUrl: await currentShopUrl() })
+      const sync = await runTaxonomySync({ notify: false })
+      if (!sync) return { ok: false, error: 'Eine Shopaktion laeuft bereits. Bitte gleich erneut versuchen.' }
+      return { ok: true, value: sync }
+    } catch (error) {
+      return { ok: false, error: safeTaxonomyError(error) ? error.message : 'Synchronisation fehlgeschlagen.' }
+    }
+  })
+  ipcMain.handle('catalog:v2:taxonomies-discard', async (event, envelope) => {
+    try {
+      const { payload } = authorize(event, envelope, 'taxonomies')
+      return { ok: true, value: await databaseCall('discardTaxonomyChange', { ...(payload && typeof payload === 'object' ? payload : {}), shopUrl: await currentShopUrl() }) }
+    } catch (error) {
+      return { ok: false, error: safeTaxonomyError(error) ? error.message : 'Aenderung konnte nicht verworfen werden.' }
+    }
+  })
   ipcMain.handle('catalog:v2:taxonomies-import', async (event, envelope) => {
     let acquired = false
     try {
@@ -131,19 +182,20 @@ app.whenReady().then(async () => {
       acquired = true
       const connection = await shopStore.load()
       if (!connection) return { ok: false, error: 'Keine Shopverbindung gespeichert. Bitte zuerst unter Shopverbindung einrichten.' }
+      // Queued edits go out first so the import does not show stale shop data for them.
+      await syncTaxonomyChanges(connection, databaseCall, shopFetch)
       const result = await importTaxonomies(connection, (url, options) => net.fetch(url, options), (progress) => {
         if (!event.sender.isDestroyed()) event.sender.send('catalog:v2:taxonomies-progress', progress)
       })
       authorize(event, envelope, 'taxonomies')
       return { ok: true, value: await database.request('replaceTaxonomies', result) }
     } catch (error) {
-      const safe = error instanceof WooError || /^(Sitzung|Fuer diese|Shopverbindung|Gespeicherte|Kein sicherer|Datenbank)/.test(error.message ?? '')
-      return { ok: false, error: safe ? error.message : 'Taxonomien konnten nicht importiert werden.' }
+      return { ok: false, error: safeTaxonomyError(error) ? error.message : 'Taxonomien konnten nicht importiert werden.' }
     } finally {
       if (acquired) shopOperationRunning = false
     }
   })
-  for (const [channel, operation] of [['taxonomies-overview', 'taxonomyOverview'], ['taxonomies-terms', 'listTaxonomyTerms']]) {
+  for (const [channel, operation] of [['taxonomies-overview', 'taxonomyOverview'], ['taxonomies-terms', 'listTaxonomyTerms'], ['taxonomies-options', 'taxonomyTermOptions']]) {
     ipcMain.handle(`catalog:v2:${channel}`, async (event, envelope) => {
       try {
         const { payload } = authorize(event, envelope, 'taxonomies')

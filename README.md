@@ -41,9 +41,25 @@ If the index is blocked (e.g. by a security plugin), the core taxonomies (catego
 
 Requests are read-only GETs with 100 terms per page, a 15-second timeout (30 s for the index), size bounds and no redirects; the import requires the Taxonomies permission and API keys stay in Main. Core taxonomies must import completely; a plugin taxonomy that refuses access is marked unreadable and its stored terms are kept. Results replace the shop's local taxonomy data in a single SQLite transaction (schema v7: `taxonomies` with kind `core`/`custom`/`attribute` and the REST route, plus `parent_id`, `product_count` and `menu_order` on `taxonomy_terms`; the full REST object stays in the term payload). Terms that no longer exist in the shop are removed together with their product relations. A taxonomy import alone does not count as a catalog import on the dashboard. The screen groups taxonomies into WooCommerce, plugins & custom, and attributes, and shows terms with search, paging, and hierarchies as a tree.
 
+### Editing terms (online first, offline capable)
+
+Terms of taxonomies with a WooCommerce route (`wc/v3/...`, including plugin and attribute taxonomies) can be created, edited (name, slug, parent, description) and deleted; `wp/v2`-only taxonomies are read-only because writes there need a WordPress login. Every edit is first stored in the SQLite outbox `taxonomy_changes` (schema v8, one row per term) and then sent to the shop immediately (POST/PUT, DELETE with `force=true`). Without a connection the edit stays queued and is shown in the list right away (states New/Changed/Being deleted); locally created terms use negative IDs until the shop assigns real ones, so children can be created under them offline.
+
+Queued changes are synchronized in creation order every 30 seconds, when the network returns, before each taxonomy import, or via *Sync now*. Parents are created before their children and local IDs are mapped to shop IDs. Connection loss stops the run and keeps everything queued; rejections by the shop (e.g. duplicate names or slugs) are stored with the shop's message and can be discarded or retried. Missing write permission (read-only API keys) stops the run. Edits made while a request is running are kept as follow-up changes (revision check). Deleting a term moves its children one level up, as WordPress does, and removes local product relations. Writes always win over concurrent edits in the shop (last write wins). Name and slug conflicts are checked locally before queueing.
+
 ## Appearance
 
 General Settings provides Light and Dark modes. Selection applies immediately to the whole app and is persisted as a shared local workspace setting in SQLite (schema v4). The login screen and native window background load the saved mode before displaying the workspace. Theme updates require the Settings permission; reading only the theme is permitted before login. A failed save restores the previous mode.
+
+## User Feedback (Notifications)
+
+All feedback about the outcome of an action uses the shared notifications in `src/components/notifications`: `const notify = useNotify()` and then `notify.success | info | warning | error(title, { message, key })`.
+
+- Title: short outcome (e.g. "Im Shop gespeichert", "Import fehlgeschlagen"); message: one sentence with the affected item or the reason.
+- Tones: `success` for completed actions, `info` for neutral results (e.g. discarded), `warning` for saved-but-not-done-yet (e.g. offline), `error` for failures. Success/info/warning close automatically (4.5/6/8 s, paused on hover/focus); errors stay until closed.
+- `key` replaces an earlier notification on the same topic instead of stacking them.
+- Notifications appear bottom right so they never cover page actions.
+- Not notifications: validation errors inside forms and dialogs (shown inline next to the input), and persistent states such as loading, progress or the pending-sync bar.
 
 ## Development
 

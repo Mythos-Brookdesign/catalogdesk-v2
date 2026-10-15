@@ -191,4 +191,4 @@ async function importTaxonomies(connection, fetcher, onProgress = () => {}) {
   return { shopUrl: normalizeUrl(connection.url), importedAt: new Date().toISOString(), taxonomies }
 }
 
-module.exports = { decodeEntities, importTaxonomies }
+module.exports = { decodeEntities, importTaxonomies, termSchema, toTerm }

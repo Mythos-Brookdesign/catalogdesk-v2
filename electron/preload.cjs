@@ -3,6 +3,10 @@ const { contextBridge, ipcRenderer } = require('electron')
 let sessionToken = null
 const authListeners = new Set()
 const taxonomyProgressListeners = new Set()
+const taxonomyChangeListeners = new Set()
+ipcRenderer.on('catalog:v2:taxonomies-changed', () => {
+  for (const listener of taxonomyChangeListeners) listener()
+})
 ipcRenderer.on('catalog:v2:taxonomies-progress', (_event, progress) => {
   for (const listener of taxonomyProgressListeners) listener(progress)
 })
@@ -45,5 +49,10 @@ contextBridge.exposeInMainWorld('catalogDesk', {
   importTaxonomies: () => authorized('catalog:v2:taxonomies-import'),
   taxonomyOverview: () => authorized('catalog:v2:taxonomies-overview'),
   listTaxonomyTerms: (query) => authorized('catalog:v2:taxonomies-terms', query),
+  taxonomyTermOptions: (taxonomy) => authorized('catalog:v2:taxonomies-options', { taxonomy }),
+  changeTaxonomyTerm: (change) => authorized('catalog:v2:taxonomies-change', change),
+  discardTaxonomyChange: (ref) => authorized('catalog:v2:taxonomies-discard', ref),
+  syncTaxonomies: (retryFailed = false) => authorized('catalog:v2:taxonomies-sync', { retryFailed }),
+  onTaxonomiesChanged: (listener) => { taxonomyChangeListeners.add(listener); return () => taxonomyChangeListeners.delete(listener) },
   onTaxonomyImportProgress: (listener) => { taxonomyProgressListeners.add(listener); return () => taxonomyProgressListeners.delete(listener) },
 })

@@ -80,9 +80,23 @@ export type TaxonomySummary = {
   attribute: { id: number; type: string; orderBy: string; hasArchives: boolean } | null
   importedAt: string
   termCount: number
+  editable: boolean
+  pendingCount: number
+  failedCount: number
 }
-export type TaxonomyOverview = { shopUrl: string | null; importedAt: string | null; taxonomies: TaxonomySummary[] }
-export type TaxonomyTerm = { id: number; name: string; slug: string; parentId: number; count: number; menuOrder: number; path: string; depth: number }
+export type TaxonomyOverview = { shopUrl: string | null; importedAt: string | null; taxonomies: TaxonomySummary[]; pendingChanges?: number; failedChanges?: number }
+export type TermState = 'clean' | 'create' | 'update' | 'delete'
+export type TaxonomyTerm = {
+  id: number; name: string; slug: string; parentId: number; count: number; menuOrder: number; description: string
+  path: string; depth: number; state: TermState; changeState: 'pending' | 'failed' | null; error: string | null
+}
+export type TermFields = { name: string; slug: string; parent: number; description: string }
+export type TaxonomyTermChange =
+  | { taxonomy: string; operation: 'create'; fields: TermFields }
+  | { taxonomy: string; operation: 'update'; termId: number; fields: TermFields }
+  | { taxonomy: string; operation: 'delete'; termId: number }
+export type TaxonomySyncResult = { synced: number; failed: number; offline: boolean; pendingChanges: number; failedChanges: number }
+export type TaxonomyTermOption = { id: number; path: string; depth: number }
 export type TaxonomyTermQuery = { taxonomy: string; query?: string; page?: number; pageSize?: number }
 export type TaxonomyTermPage = { terms: TaxonomyTerm[]; total: number; page: number; pageSize: number }
 export type TaxonomyImportProgress = { label: string; completed: number; total: number }
@@ -109,6 +123,11 @@ declare global {
       importTaxonomies: () => Promise<UserResult<TaxonomyOverview>>
       taxonomyOverview: () => Promise<UserResult<TaxonomyOverview>>
       listTaxonomyTerms: (query: TaxonomyTermQuery) => Promise<UserResult<TaxonomyTermPage>>
+      taxonomyTermOptions: (taxonomy: string) => Promise<UserResult<TaxonomyTermOption[]>>
+      changeTaxonomyTerm: (change: TaxonomyTermChange) => Promise<UserResult<{ termId: number; sync: TaxonomySyncResult | null }>>
+      discardTaxonomyChange: (ref: { taxonomy: string; termId: number }) => Promise<UserResult<boolean>>
+      syncTaxonomies: (retryFailed?: boolean) => Promise<UserResult<TaxonomySyncResult>>
+      onTaxonomiesChanged: (listener: () => void) => () => void
       onTaxonomyImportProgress: (listener: (progress: TaxonomyImportProgress) => void) => () => void
     }
   }

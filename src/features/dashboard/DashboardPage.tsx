@@ -2,13 +2,13 @@ import { useEffect, useState } from 'react'
 import {
   ArrowRight,
   Boxes,
-  CircleAlert,
   Layers3,
   PackageCheck,
   PlugZap,
   RefreshCw,
 } from 'lucide-react'
 import type { WorkspaceSummary } from '../../types/desktop'
+import { useNotify } from '../../components/notifications/notifications'
 import './DashboardPage.css'
 
 type DesktopApi = NonNullable<Window['catalogDesk']>
@@ -23,7 +23,7 @@ export function DashboardPage({
   canOpenProducts?: boolean
 }) {
   const [summary, setSummary] = useState<WorkspaceSummary | null>(null)
-  const [error, setError] = useState('')
+  const notify = useNotify()
 
   useEffect(() => {
     if (!desktop) return
@@ -31,23 +31,19 @@ export function DashboardPage({
     desktop
       .workspaceSummary()
       .then((result) => {
-        if (!cancelled) {
-          setSummary(result)
-          setError('')
-        }
+        if (!cancelled) setSummary(result)
       })
       .catch((reason) => {
         if (!cancelled)
-          setError(
-            reason instanceof Error
-              ? reason.message
-              : 'Dashboarddaten konnten nicht geladen werden.',
-          )
+          notify.error('Dashboard nicht geladen', {
+            message: reason instanceof Error ? reason.message : 'Die lokale Datenbank hat nicht geantwortet.',
+            key: 'dashboard-load',
+          })
       })
     return () => {
       cancelled = true
     }
-  }, [desktop])
+  }, [desktop, notify])
 
   const metrics = [
     { label: 'Produkte', value: summary?.simple ?? 0, icon: Boxes },
@@ -67,12 +63,6 @@ export function DashboardPage({
           Produkte öffnen <ArrowRight size={15} />
         </button>
       </header>
-
-      {error && (
-        <div className="dashboard-error" role="alert">
-          <CircleAlert size={17} />{error}
-        </div>
-      )}
 
       <section className="dashboard-metrics" aria-label="Katalogübersicht">
         {metrics.map(({ label, value, icon: Icon }) => (

@@ -1,18 +1,19 @@
 import { useState } from 'react'
 import { Moon, Sun } from 'lucide-react'
 import type { Theme } from '../../types/desktop'
+import { useNotify } from '../../components/notifications/notifications'
 import './SettingsPage.css'
 
 export function AppearanceSettingsPage() {
   const desktop = window.catalogDesk
   const [theme, setTheme] = useState<Theme>(document.documentElement.dataset.theme === 'dark' ? 'dark' : 'light')
   const [busy, setBusy] = useState(false)
-  const [error, setError] = useState('')
+  const notify = useNotify()
 
   async function changeTheme(next: Theme) {
     if (busy || next === theme) return
     const previous = theme
-    setBusy(true); setError('')
+    setBusy(true)
     document.documentElement.dataset.theme = next
     setTheme(next)
     try {
@@ -23,7 +24,7 @@ export function AppearanceSettingsPage() {
     } catch (reason) {
       document.documentElement.dataset.theme = previous
       setTheme(previous)
-      setError(reason instanceof Error ? reason.message : 'Farbschema konnte nicht gespeichert werden.')
+      notify.error('Farbschema nicht gespeichert', { message: reason instanceof Error ? reason.message : 'Bitte erneut versuchen.', key: 'theme' })
     }
     finally { setBusy(false) }
   }
@@ -37,7 +38,6 @@ export function AppearanceSettingsPage() {
         <label className={`theme-option ${theme === 'light' ? 'selected' : ''}`}><input type="radio" name="theme" value="light" checked={theme === 'light'} onChange={() => void changeTheme('light')} /><Sun size={17} />Hell</label>
         <label className={`theme-option ${theme === 'dark' ? 'selected' : ''}`}><input type="radio" name="theme" value="dark" checked={theme === 'dark'} onChange={() => void changeTheme('dark')} /><Moon size={17} />Dunkel</label>
       </fieldset>
-      {error && <p className="auth-error" role="alert">{error}</p>}
     </section>
   </main>
 }

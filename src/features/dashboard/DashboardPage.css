@@ -26,5 +26,4 @@
 .dashboard-next > div { display: flex; align-items: center; gap: 8px; }
 .dashboard-next svg { color: var(--accent); }
 .dashboard-local { font-size: 10px; }
-.dashboard-error { display: flex; align-items: center; gap: 8px; color: var(--red); font-size: 12px; }
 @media (max-width: 740px) { .dashboard-page { padding: 22px 16px; } .dashboard-metrics { grid-template-columns: 1fr; } .source-details { grid-template-columns: 1fr; gap: 12px; } .dashboard-heading { align-items: flex-start; flex-direction: column; } }

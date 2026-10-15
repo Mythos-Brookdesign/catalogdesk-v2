@@ -15,10 +15,7 @@
 .shop-settings-fields { display: grid; gap: 16px; border: 0; padding: 0; margin: 0; min-width: 0; }
 .shop-settings-actions { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
 .shop-settings-actions > .icon-button { margin-right: auto; }
-.shop-settings-notice { color: var(--green); font-size: 12px; }
 .shop-settings-progress { display: flex; align-items: center; gap: 8px; color: var(--muted); font-size: 12px; }
-.shop-settings-result { display: grid; gap: 6px; border-top: 1px solid var(--line); padding-top: 16px; color: var(--green); font-size: 12px; overflow-wrap: anywhere; }
-.shop-settings-result time { color: var(--muted); font-size: 11px; }
 .shop-settings-confirm { display: grid; gap: 14px; padding: 16px 0; border-top: 1px solid var(--line); font-size: 12px; line-height: 1.6; }
 .shop-settings-confirm h3 { font-size: 15px; }
 @media (max-width: 600px) { .shop-settings-actions .button { flex: 1 1 180px; } }
