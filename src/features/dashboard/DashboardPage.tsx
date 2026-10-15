@@ -16,9 +16,11 @@ type DesktopApi = NonNullable<Window['catalogDesk']>
 export function DashboardPage({
   desktop,
   onOpenProducts,
+  canOpenProducts = true,
 }: {
   desktop?: DesktopApi
   onOpenProducts: () => void
+  canOpenProducts?: boolean
 }) {
   const [summary, setSummary] = useState<WorkspaceSummary | null>(null)
   const [error, setError] = useState('')
@@ -61,7 +63,7 @@ export function DashboardPage({
           <h1>Dashboard</h1>
           <p>Dein lokaler WooCommerce-Katalog auf einen Blick.</p>
         </div>
-        <button className="button primary" onClick={onOpenProducts}>
+        <button className="button primary" disabled={!canOpenProducts} onClick={onOpenProducts}>
           Produkte öffnen <ArrowRight size={15} />
         </button>
       </header>

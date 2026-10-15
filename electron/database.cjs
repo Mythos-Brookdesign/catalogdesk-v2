@@ -42,6 +42,14 @@ const newAdminSchema = z.object({
   salt: z.string().regex(/^[a-f0-9]{32}$/),
   passwordHash: z.string().regex(/^[a-f0-9]{128}$/),
 }).strict()
+const menuPermissions = z.array(z.enum(['dashboard', 'products', 'orders', 'customers', 'settings', 'users', 'shop', 'taxonomies', 'sync'])).max(9)
+const managedUserSchema = newAdminSchema.omit({ salt: true, passwordHash: true }).extend({
+  id: z.string().uuid().optional(),
+  role: z.enum(['admin', 'employee']),
+  permissions: menuPermissions,
+  salt: newAdminSchema.shape.salt.optional(),
+  passwordHash: newAdminSchema.shape.passwordHash.optional(),
+}).strict()
 
 function openDatabase(filename) {
   mkdirSync(path.dirname(filename), { recursive: true, mode: 0o700 })
@@ -50,7 +58,7 @@ function openDatabase(filename) {
     database.exec('PRAGMA busy_timeout = 5000; PRAGMA foreign_keys = ON; PRAGMA journal_mode = WAL; PRAGMA synchronous = FULL;')
     database.exec('BEGIN IMMEDIATE')
     const version = database.prepare('PRAGMA user_version').get().user_version
-    if (version > 2) throw new Error('Database schema is newer than this app.')
+    if (version > 3) throw new Error('Database schema is newer than this app.')
     if (version < 1) {
       database.exec(`
         CREATE TABLE shops (
@@ -120,6 +128,23 @@ function openDatabase(filename) {
       ) STRICT;
       PRAGMA user_version = 2;`)
     }
+    if (version < 3) {
+      database.exec(`ALTER TABLE users RENAME TO users_old;
+        CREATE TABLE users (
+          id TEXT PRIMARY KEY, first_name TEXT NOT NULL, last_name TEXT NOT NULL,
+          email TEXT NOT NULL COLLATE NOCASE UNIQUE, username TEXT NOT NULL COLLATE NOCASE UNIQUE,
+          role TEXT NOT NULL CHECK(role IN ('admin', 'employee')),
+          password_salt TEXT NOT NULL CHECK(length(password_salt) = 32),
+          password_hash TEXT NOT NULL CHECK(length(password_hash) = 128),
+          active INTEGER NOT NULL DEFAULT 1 CHECK(active IN (0, 1)), created_at TEXT NOT NULL,
+          permissions TEXT NOT NULL DEFAULT '[]' CHECK(json_valid(permissions))
+        ) STRICT;
+        INSERT INTO users SELECT id, first_name, last_name, email, username,
+          CASE WHEN role = 'admin' THEN 'admin' ELSE 'employee' END,
+          password_salt, password_hash, active, created_at,
+          CASE WHEN role = 'admin' THEN '[]' ELSE '["dashboard","products"]' END FROM users_old;
+        DROP TABLE users_old; PRAGMA user_version = 3;`)
+    }
     database.exec('COMMIT')
   } catch (error) {
     if (database.isTransaction) database.exec('ROLLBACK')
@@ -128,13 +153,58 @@ function openDatabase(filename) {
   }
 
   return {
+    listUsers() {
+      return database.prepare('SELECT id, first_name AS firstName, last_name AS lastName, email, username, role, permissions FROM users ORDER BY last_name, first_name').all()
+        .map((user) => ({ ...user, permissions: JSON.parse(user.permissions) }))
+    },
+    saveUser(input) {
+      const parsed = managedUserSchema.parse(input)
+      database.exec('BEGIN IMMEDIATE')
+      try {
+        const existing = parsed.id ? database.prepare('SELECT role, active FROM users WHERE id = ?').get(parsed.id) : null
+        if (parsed.id && !existing) throw new Error('Benutzer wurde nicht gefunden.')
+        if (existing?.role === 'admin' && existing.active && parsed.role !== 'admin' && database.prepare("SELECT COUNT(*) AS count FROM users WHERE role = 'admin' AND active = 1").get().count <= 1)
+          throw new Error('Mindestens ein Administrator muss erhalten bleiben.')
+        if (Boolean(parsed.salt) !== Boolean(parsed.passwordHash)) throw new Error('Ungueltige Passwortdaten.')
+        const permissions = JSON.stringify(parsed.role === 'admin' ? [] : [...new Set(parsed.permissions)])
+        const id = parsed.id ?? randomUUID()
+        if (existing) {
+          database.prepare('UPDATE users SET first_name = ?, last_name = ?, email = ?, username = ?, role = ?, permissions = ? WHERE id = ?').run(parsed.firstName, parsed.lastName, parsed.email.toLowerCase(), parsed.username.toLowerCase(), parsed.role, permissions, id)
+          if (parsed.passwordHash) database.prepare('UPDATE users SET password_salt = ?, password_hash = ? WHERE id = ?').run(parsed.salt, parsed.passwordHash, id)
+        } else {
+          if (!parsed.salt || !parsed.passwordHash) throw new Error('Passwort erforderlich.')
+          database.prepare('INSERT INTO users (id, first_name, last_name, email, username, role, password_salt, password_hash, created_at, permissions) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)').run(id, parsed.firstName, parsed.lastName, parsed.email.toLowerCase(), parsed.username.toLowerCase(), parsed.role, parsed.salt, parsed.passwordHash, new Date().toISOString(), permissions)
+        }
+        database.exec('COMMIT')
+        return id
+      } catch (error) {
+        if (database.isTransaction) database.exec('ROLLBACK')
+        throw error
+      }
+    },
+    deleteUser(id) {
+      const parsed = z.string().uuid().parse(id)
+      database.exec('BEGIN IMMEDIATE')
+      try {
+        const user = database.prepare('SELECT role, active FROM users WHERE id = ?').get(parsed)
+        if (!user) throw new Error('Benutzer wurde nicht gefunden.')
+        if (user.role === 'admin' && user.active && database.prepare("SELECT COUNT(*) AS count FROM users WHERE role = 'admin' AND active = 1").get().count <= 1)
+          throw new Error('Mindestens ein Administrator muss erhalten bleiben.')
+        database.prepare('DELETE FROM users WHERE id = ?').run(parsed)
+        database.exec('COMMIT')
+        return true
+      } catch (error) {
+        if (database.isTransaction) database.exec('ROLLBACK')
+        throw error
+      }
+    },
     userCount() {
       return database.prepare('SELECT COUNT(*) AS count FROM users').get().count
     },
     findUserByUsername(username) {
       const parsed = usernameSchema.parse(username)
       return database.prepare(
-        'SELECT id, first_name AS firstName, last_name AS lastName, email, username, role, password_salt AS salt, password_hash AS passwordHash, active FROM users WHERE username = ? COLLATE NOCASE',
+        'SELECT id, first_name AS firstName, last_name AS lastName, email, username, role, permissions, password_salt AS salt, password_hash AS passwordHash, active FROM users WHERE username = ? COLLATE NOCASE',
       ).get(parsed) ?? null
     },
     createInitialAdmin(input) {

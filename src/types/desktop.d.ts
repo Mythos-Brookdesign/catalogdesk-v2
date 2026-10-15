@@ -43,8 +43,12 @@ export type CatalogUser = {
   lastName: string
   email: string
   username: string
-  role: 'admin' | 'editor' | 'reader'
+  role: 'admin' | 'employee'
+  permissions: MenuSection[]
 }
+export type MenuSection = 'dashboard' | 'products' | 'orders' | 'customers' | 'settings' | 'users' | 'shop' | 'taxonomies' | 'sync'
+export type UserInput = AdminProfile & { id?: string; role: CatalogUser['role']; permissions: MenuSection[] }
+export type UserResult<Value> = { ok: true; value: Value } | { ok: false; error: string }
 
 export type AuthState = {
   setupRequired: boolean
@@ -62,10 +66,20 @@ export type AdminProfile = {
   username: string
   password: string
 }
+export type ShopConnectionInput = { url: string; consumerKey: string; consumerSecret: string }
+export type ShopConnectionCheck = { url: string; productCount: number; checkedAt: string }
 
 declare global {
   interface Window {
     catalogDesk?: {
+      shopConnection: () => Promise<UserResult<{ url: string } | null>>
+      saveShopConnection: (input: ShopConnectionInput) => Promise<UserResult<{ url: string }>>
+      testShopConnection: (input: ShopConnectionInput | null) => Promise<UserResult<ShopConnectionCheck>>
+      deleteShopConnection: () => Promise<UserResult<boolean>>
+      onAuthExpired: (listener: () => void) => () => void
+      listUsers: () => Promise<UserResult<CatalogUser[]>>
+      saveUser: (input: Omit<UserInput, 'password'> & { password?: string }) => Promise<UserResult<string>>
+      deleteUser: (id: string) => Promise<UserResult<boolean>>
       authState: () => Promise<AuthState>
       bootstrapAdmin: (profile: AdminProfile) => Promise<AuthResult>
       login: (credentials: { username: string; password: string }) => Promise<AuthResult>

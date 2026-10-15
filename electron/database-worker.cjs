@@ -14,6 +14,9 @@ const operations = new Set([
   'findUserByUsername',
   'createInitialAdmin',
   'recordLogin',
+  'listUsers',
+  'saveUser',
+  'deleteUser',
   'workspaceSummary',
   'listProducts',
   'replaceCatalog',
@@ -27,6 +30,7 @@ parentPort.on('message', ({ id, operation, payload }) => {
     parentPort.postMessage({ id, result })
     if (operation === 'close') parentPort.close()
   } catch (error) {
-    parentPort.postMessage({ id, error: error.message?.startsWith('Unbekannte') ? error.message : 'Datenbankoperation fehlgeschlagen.' })
+    const safe = ['Unbekannte', 'Mindestens ein Administrator', 'Benutzer wurde nicht gefunden', 'Passwort erforderlich'].some((prefix) => error.message?.startsWith(prefix))
+    parentPort.postMessage({ id, error: safe ? error.message : 'Datenbankoperation fehlgeschlagen. Benutzername oder E-Mail eventuell bereits vergeben.' })
   }
 })

@@ -2,11 +2,33 @@ import { afterEach, expect, it } from 'vitest'
 import { mkdtempSync, rmSync } from 'node:fs'
 import path from 'node:path'
 import os from 'node:os'
+import { DatabaseSync } from 'node:sqlite'
 import databaseModule from './database.cjs'
 
 const paths = []
 afterEach(() => {
   for (const directory of paths.splice(0)) rmSync(directory, { recursive: true, force: true })
+})
+
+it('migrates existing v2 users without losing passwords or profiles', () => {
+  const directory = mkdtempSync(path.join(os.tmpdir(), 'catalogdesk-v2-user-migration-'))
+  paths.push(directory)
+  const filename = path.join(directory, 'users.sqlite')
+  let database = databaseModule.openDatabase(filename)
+  const admin = database.createInitialAdmin({ firstName: 'Ada', lastName: 'Admin', email: 'ada@example.com', username: 'ada', salt: 'a'.repeat(32), passwordHash: 'b'.repeat(128) })
+  database.close()
+  const old = new DatabaseSync(filename)
+  old.exec(`ALTER TABLE users RENAME TO users_v3;
+    CREATE TABLE users AS SELECT id, first_name, last_name, email, username,
+      role, password_salt, password_hash, active, created_at FROM users_v3;
+    DROP TABLE users_v3;
+    UPDATE users SET role = 'editor'; PRAGMA user_version = 2;`)
+  old.close()
+  database = databaseModule.openDatabase(filename)
+  try {
+    expect(database.findUserByUsername('ada')).toMatchObject({ id: admin.id, role: 'employee', passwordHash: 'b'.repeat(128) })
+    expect(database.listUsers()[0].permissions).toEqual(['dashboard', 'products'])
+  } finally { database.close() }
 })
 
 it('opens the new product-first schema with an empty local workspace', () => {

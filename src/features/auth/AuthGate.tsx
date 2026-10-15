@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { KeyRound, LoaderCircle, ShieldCheck } from 'lucide-react'
+import { KeyRound, LoaderCircle } from 'lucide-react'
 import App from '../../App'
 import type { AuthState } from '../../types/desktop'
 import './AuthGate.css'
@@ -20,11 +20,17 @@ export function AuthGate() {
   useEffect(() => {
     if (!desktop) return
     let cancelled = false
+    const unsubscribe = desktop.onAuthExpired(() => {
+      setAuth({ setupRequired: false, user: null })
+      setPassword('')
+      setPasswordConfirmation('')
+      setError('Bitte erneut anmelden. Die Sitzung oder Kontodaten wurden geaendert.')
+    })
     desktop.authState()
       .then((state) => { if (!cancelled) setAuth(state) })
       .catch(() => { if (!cancelled) setError('Lokale Nutzer konnten nicht geladen werden.') })
       .finally(() => { if (!cancelled) setLoading(false) })
-    return () => { cancelled = true }
+    return () => { cancelled = true; unsubscribe() }
   }, [desktop])
 
   if (!desktop) return <App />
@@ -78,7 +84,6 @@ export function AuthGate() {
         <span className="eyebrow">CATALOGDESK · LOKALER ARBEITSBEREICH</span>
         <h1 id="auth-title">{setupRequired ? 'Admin einrichten' : 'Anmelden'}</h1>
         <p>{setupRequired ? 'Erstelle das erste Admin-Konto für diesen lokalen Arbeitsbereich.' : 'Melde dich mit deinem lokalen Benutzerkonto an.'}</p>
-        <div className="auth-security"><ShieldCheck size={16} /><span>Das Passwort wird lokal gehasht gespeichert.</span></div>
         <form onSubmit={(formEvent) => void submit(formEvent)}>
           {setupRequired && <>
             <label className="auth-field"><span>Vorname</span><input required maxLength={80} autoComplete="given-name" value={firstName} onChange={(event) => setFirstName(event.target.value)} /></label>

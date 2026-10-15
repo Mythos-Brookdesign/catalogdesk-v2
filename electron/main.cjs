@@ -1,9 +1,11 @@
-const { app, BrowserWindow, ipcMain, net, protocol } = require('electron')
+const { app, BrowserWindow, ipcMain, net, protocol, safeStorage } = require('electron')
 const { mkdirSync } = require('node:fs')
 const path = require('node:path')
 const { pathToFileURL } = require('node:url')
 const { createDatabaseClient } = require('./database-client.cjs')
 const { createAuthenticator } = require('./auth.cjs')
+const { createShopStore } = require('./shop-store.cjs')
+const { resolveConnection, testConnection } = require('./shop.cjs')
 
 const development = !app.isPackaged && process.argv.includes('--dev')
 const entryUrl = development ? 'http://127.0.0.1:5179/' : 'catalog://app/index.html'
@@ -19,6 +21,8 @@ if (!app.isPackaged && process.env.CATALOGDESK_V2_TEST_USER_DATA) {
 protocol.registerSchemesAsPrivileged([{ scheme: 'catalog', privileges: { standard: true, secure: true, supportFetchAPI: true, corsEnabled: true } }])
 
 function validateSender(event) {
+  if (!mainWindow || event.sender.id !== mainWindow.webContents.id || event.senderFrame !== mainWindow.webContents.mainFrame)
+    throw new Error('Untrusted IPC sender.')
   const frameUrl = event.senderFrame?.url
   if (!frameUrl) throw new Error('Untrusted IPC sender.')
   const url = new URL(frameUrl)
@@ -29,9 +33,14 @@ function validateSender(event) {
 
 function authorize(event, envelope, permission) {
   validateSender(event)
-  return {
-    user: authenticator.requireSession(envelope?.sessionToken, permission),
-    payload: envelope?.payload,
+  try {
+    return {
+      user: authenticator.requireSession(envelope?.sessionToken, permission),
+      payload: envelope?.payload,
+    }
+  } catch (error) {
+    if (error.message.startsWith('Sitzung')) event.sender.send('catalog:v2:auth-expired')
+    throw error
   }
 }
 
@@ -64,6 +73,42 @@ app.whenReady().then(() => {
   authenticator = createAuthenticator((operation, payload) =>
     database.request(operation, payload),
   )
+  const shopStore = createShopStore(path.join(app.getPath('userData'), 'credentials'), safeStorage)
+  let shopOperationRunning = false
+  function authorizeShopSettings(event, envelope) {
+    const { user, payload } = authorize(event, envelope, 'session')
+    if (user.role !== 'admin' && !user.permissions.some((entry) => ['settings', 'shop'].includes(entry)))
+      throw new Error('Keine Berechtigung fuer die Shopverbindung.')
+    return payload
+  }
+  for (const operation of ['summary', 'save', 'test', 'delete']) {
+    ipcMain.handle(`catalog:v2:shop-${operation}`, async (event, envelope) => {
+      let acquired = false
+      try {
+        const payload = authorizeShopSettings(event, envelope)
+        if (operation === 'summary') return { ok: true, value: await shopStore.summary() }
+        if (shopOperationRunning) return { ok: false, error: 'Eine Shopaktion laeuft bereits.' }
+        shopOperationRunning = true
+        acquired = true
+        if (operation === 'delete') {
+          if (payload?.confirmed !== true) return { ok: false, error: 'Bestaetigung zum Entfernen fehlt.' }
+          return { ok: true, value: await shopStore.delete() }
+        }
+        const stored = await shopStore.load()
+        const connection = resolveConnection(payload, stored)
+        authorizeShopSettings(event, envelope)
+        if (operation === 'save') return { ok: true, value: await shopStore.save(connection) }
+        const result = await testConnection(connection, (url, options) => net.fetch(url, options))
+        if (!result.ok) return result
+        authorizeShopSettings(event, envelope)
+        return { ok: true, value: { url: result.url, productCount: result.productCount, checkedAt: result.checkedAt } }
+      } catch (error) {
+        return { ok: false, error: error.name === 'ZodError' ? 'Shopadresse und API-Schluessel pruefen.' : error.message }
+      } finally {
+        if (acquired) shopOperationRunning = false
+      }
+    })
+  }
   ipcMain.handle('catalog:v2:auth-state', async (event, sessionToken) => {
     validateSender(event)
     return authenticator.state(sessionToken)
@@ -94,13 +139,28 @@ app.whenReady().then(() => {
     return authenticator.logout(sessionToken)
   })
   ipcMain.handle('catalog:v2:workspace-summary', async (event, envelope) => {
-    authorize(event, envelope, 'catalog:read')
+    const { user } = authorize(event, envelope, 'session')
+    if (user.role !== 'admin' && !user.permissions.some((entry) => ['dashboard', 'products'].includes(entry)))
+      throw new Error('Fuer diesen Bereich fehlt die erforderliche Berechtigung.')
     return database.request('workspaceSummary')
   })
   ipcMain.handle('catalog:v2:products-list', async (event, envelope) => {
-    const { payload } = authorize(event, envelope, 'catalog:read')
+    const { payload } = authorize(event, envelope, 'products')
     return database.request('listProducts', payload)
   })
+  for (const [channel, method] of [['users-list', 'listUsers'], ['users-save', 'saveUser'], ['users-delete', 'deleteUser']]) {
+    ipcMain.handle(`catalog:v2:${channel}`, async (event, envelope) => {
+      try {
+        const { user, payload } = authorize(event, envelope, method === 'listUsers' ? 'users' : 'session')
+        const value = await authenticator[method](envelope.sessionToken, payload)
+        if (method !== 'listUsers' && (payload?.id ?? payload) === user.id)
+          event.sender.send('catalog:v2:auth-expired')
+        return { ok: true, value }
+      } catch (error) {
+        return { ok: false, error: error.name === 'ZodError' ? 'Bitte alle Eingaben und das Passwort (mindestens 8 Zeichen) pruefen.' : error.message }
+      }
+    })
+  }
   if (!development) {
     protocol.handle('catalog', (request) => {
       try {
