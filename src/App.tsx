@@ -17,9 +17,43 @@ import './App.css'
 import { ProductsPage } from './features/products/ProductsPage'
 import { DashboardPage } from './features/dashboard/DashboardPage'
 
+type Section =
+  | 'dashboard'
+  | 'products'
+  | 'orders'
+  | 'customers'
+  | 'settings'
+  | 'users'
+  | 'shop'
+  | 'taxonomies'
+  | 'sync'
+
+const sectionTitles: Record<Section, string> = {
+  dashboard: 'Dashboard',
+  products: 'Produkte',
+  orders: 'Bestellungen',
+  customers: 'Kunden',
+  settings: 'Einstellungen',
+  users: 'Benutzer',
+  shop: 'Shopverbindung',
+  taxonomies: 'Taxonomien',
+  sync: 'Synchronisation',
+}
+
+function EmptySection({ title }: { title: string }) {
+  return (
+    <main className="section-page">
+      <header>
+        <span className="eyebrow">ARBEITSBEREICH</span>
+        <h1>{title}</h1>
+      </header>
+    </main>
+  )
+}
+
 function App() {
   const desktop = window.catalogDesk
-  const [activeSection, setActiveSection] = useState('dashboard')
+  const [activeSection, setActiveSection] = useState<Section>('dashboard')
 
   return (
     <div className="app-shell">
@@ -49,28 +83,28 @@ function App() {
           >
             <Boxes size={17} />Produkte
           </button>
-          <button disabled title="Bestellverwaltung folgt in einer späteren Phase">
+          <button className={activeSection === 'orders' ? 'active' : ''} onClick={() => setActiveSection('orders')}>
             <ShoppingBag size={17} />Bestellungen
           </button>
-          <button disabled title="Kundenverwaltung folgt nach Datenschutz- und Rollenmodell">
+          <button className={activeSection === 'customers' ? 'active' : ''} onClick={() => setActiveSection('customers')}>
             <UsersRound size={17} />Kunden
           </button>
         </nav>
         <div className="sidebar-caption secondary-caption">EINSTELLUNGEN</div>
         <nav className="app-nav">
-          <button disabled title="Allgemeine Einstellungen folgen als eigener Bereich">
+          <button className={activeSection === 'settings' ? 'active' : ''} onClick={() => setActiveSection('settings')}>
             <Settings size={17} />Einstellungen
           </button>
-          <button disabled title="Benutzerverwaltung folgt mit dem V2-Rollenmodell">
+          <button className={activeSection === 'users' ? 'active' : ''} onClick={() => setActiveSection('users')}>
             <UserRound size={17} />Benutzer
           </button>
-          <button disabled title="Shopverbindung folgt als nächster V2-Schritt">
+          <button className={activeSection === 'shop' ? 'active' : ''} onClick={() => setActiveSection('shop')}>
             <PlugZap size={17} />Shopverbindung
           </button>
-          <button disabled title="Taxonomiepflege folgt im Produktbereich">
+          <button className={activeSection === 'taxonomies' ? 'active' : ''} onClick={() => setActiveSection('taxonomies')}>
             <Tags size={17} />Taxonomien
           </button>
-          <button disabled title="Synchronisation folgt nach dem lokalen Produktmodell">
+          <button className={activeSection === 'sync' ? 'active' : ''} onClick={() => setActiveSection('sync')}>
             <GitCompareArrows size={17} />Synchronisation
           </button>
         </nav>
@@ -83,7 +117,7 @@ function App() {
       <div className="app-main">
         <header className="app-topbar">
           <div className="breadcrumb">
-            <span>CatalogDesk</span><ChevronDown size={13} /><strong>{activeSection === 'dashboard' ? 'Dashboard' : 'Produkte'}</strong>
+            <span>CatalogDesk</span><ChevronDown size={13} /><strong>{sectionTitles[activeSection]}</strong>
           </div>
           <div className="topbar-tools">
             <span className="connection-state"><span className="status-dot" />Offline bereit</span>
@@ -97,6 +131,9 @@ function App() {
           />
         )}
         {activeSection === 'products' && <ProductsPage desktop={desktop} />}
+        {!['dashboard', 'products'].includes(activeSection) && (
+          <EmptySection title={sectionTitles[activeSection]} />
+        )}
       </div>
     </div>
   )
