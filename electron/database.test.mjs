@@ -94,3 +94,42 @@ it('stores product families, variations and taxonomy relations atomically', () =
     database.close()
   }
 })
+
+  it('allows exactly one initial admin and stores profile data without a plaintext password', () => {
+    const directory = mkdtempSync(path.join(os.tmpdir(), 'catalogdesk-v2-admin-'))
+    paths.push(directory)
+    const database = databaseModule.openDatabase(path.join(directory, 'catalogdesk-v2.sqlite'))
+    try {
+      expect(database.userCount()).toBe(0)
+      const admin = database.createInitialAdmin({
+        firstName: 'Ada',
+        lastName: 'Lovelace',
+        email: 'ADA@example.com',
+        username: 'Ada.Admin',
+        salt: 'a'.repeat(32),
+        passwordHash: 'b'.repeat(128),
+      })
+      expect(admin).toMatchObject({
+        firstName: 'Ada',
+        lastName: 'Lovelace',
+        email: 'ada@example.com',
+        username: 'ada.admin',
+        role: 'admin',
+      })
+      expect(database.userCount()).toBe(1)
+      expect(database.findUserByUsername('ADA.ADMIN')).toMatchObject({
+        passwordHash: 'b'.repeat(128),
+        salt: 'a'.repeat(32),
+      })
+      expect(() => database.createInitialAdmin({
+        firstName: 'Grace',
+        lastName: 'Hopper',
+        email: 'grace@example.com',
+        username: 'grace',
+        salt: 'c'.repeat(32),
+        passwordHash: 'd'.repeat(128),
+      })).toThrow('already configured')
+    } finally {
+      database.close()
+    }
+  })

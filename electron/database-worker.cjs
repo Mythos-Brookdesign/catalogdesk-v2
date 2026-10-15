@@ -9,7 +9,16 @@ try {
   startupError = 'Die lokale V2-Datenbank konnte nicht geoeffnet werden.'
 }
 
-const operations = new Set(['workspaceSummary', 'listProducts', 'replaceCatalog', 'close'])
+const operations = new Set([
+  'userCount',
+  'findUserByUsername',
+  'createInitialAdmin',
+  'recordLogin',
+  'workspaceSummary',
+  'listProducts',
+  'replaceCatalog',
+  'close',
+])
 parentPort.on('message', ({ id, operation, payload }) => {
   try {
     if (startupError) throw new Error(startupError)

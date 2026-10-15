@@ -69,6 +69,7 @@ h1, h2, h3 { font-family: 'Manrope Variable', sans-serif; }
 .breadcrumb strong { color: var(--ink); font-weight: 550; }
 .topbar-tools { gap: 14px; }
 .connection-state { color: var(--muted); font-size: 10px; }
+.user-chip { padding: 5px 8px; border: 1px solid var(--line); border-radius: 4px; color: var(--ink); background: var(--surface-alt); font-size: 10px; }
 .icon-button { width: 30px; height: 30px; display: grid; place-items: center; border: 1px solid transparent; border-radius: 4px; background: transparent; color: var(--muted); }
 .icon-button:hover { border-color: var(--line); background: var(--surface-alt); color: var(--ink); }
 .button { min-height: 34px; display: inline-flex; align-items: center; justify-content: center; gap: 8px; padding: 0 12px; border: 1px solid var(--line); border-radius: 4px; background: var(--surface); color: var(--ink); font-size: 11px; font-weight: 550; }

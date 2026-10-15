@@ -37,9 +37,39 @@ export type ProductPage = {
   pageSize: number
 }
 
+export type CatalogUser = {
+  id: string
+  firstName: string
+  lastName: string
+  email: string
+  username: string
+  role: 'admin' | 'editor' | 'reader'
+}
+
+export type AuthState = {
+  setupRequired: boolean
+  user: CatalogUser | null
+}
+
+export type AuthResult =
+  | { ok: true; user: CatalogUser }
+  | { ok: false; error: string }
+
+export type AdminProfile = {
+  firstName: string
+  lastName: string
+  email: string
+  username: string
+  password: string
+}
+
 declare global {
   interface Window {
     catalogDesk?: {
+      authState: () => Promise<AuthState>
+      bootstrapAdmin: (profile: AdminProfile) => Promise<AuthResult>
+      login: (credentials: { username: string; password: string }) => Promise<AuthResult>
+      logout: () => Promise<boolean>
       workspaceSummary: () => Promise<WorkspaceSummary>
       listProducts: (query?: ProductQuery) => Promise<ProductPage>
     }

@@ -6,6 +6,7 @@ import {
   Database,
   GitCompareArrows,
   LayoutDashboard,
+  LogOut,
   PlugZap,
   Settings,
   ShoppingBag,
@@ -16,6 +17,7 @@ import {
 import './App.css'
 import { ProductsPage } from './features/products/ProductsPage'
 import { DashboardPage } from './features/dashboard/DashboardPage'
+import type { CatalogUser } from './types/desktop'
 
 type Section =
   | 'dashboard'
@@ -51,7 +53,13 @@ function EmptySection({ title }: { title: string }) {
   )
 }
 
-function App() {
+function App({
+  currentUser,
+  onLogout,
+}: {
+  currentUser?: CatalogUser
+  onLogout?: () => void
+} = {}) {
   const desktop = window.catalogDesk
   const [activeSection, setActiveSection] = useState<Section>('dashboard')
 
@@ -121,6 +129,8 @@ function App() {
           </div>
           <div className="topbar-tools">
             <span className="connection-state"><span className="status-dot" />Offline bereit</span>
+            {currentUser && <span className="user-chip">{currentUser.firstName} {currentUser.lastName}</span>}
+            {onLogout && <button className="icon-button" aria-label="Abmelden" title="Abmelden" onClick={onLogout}><LogOut size={17} /></button>}
             <button className="icon-button" aria-label="Hilfe" title="Hilfe"><CircleHelp size={17} /></button>
           </div>
         </header>

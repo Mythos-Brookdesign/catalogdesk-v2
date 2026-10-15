@@ -12,7 +12,7 @@
     "build": "tsc -b && node --check electron/main.cjs && node --check electron/preload.cjs && vite build",
     "typecheck": "tsc -b && node --check electron/main.cjs && node --check electron/preload.cjs",
     "lint": "eslint .",
-    "test": "vitest run",
+    "test": "vitest run electron",
     "test:e2e": "playwright test",
     "dist": "npm run build && electron-builder",
     "dist:dir": "npm run build && electron-builder --dir",

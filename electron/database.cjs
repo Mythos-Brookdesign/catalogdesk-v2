@@ -1,6 +1,7 @@
 const { DatabaseSync } = require('node:sqlite')
 const { mkdirSync } = require('node:fs')
 const path = require('node:path')
+const { randomUUID } = require('node:crypto')
 const { z } = require('zod')
 
 const shopUrlSchema = z.string().url().max(2048).refine((value) => {
@@ -32,6 +33,15 @@ const catalogSchema = z.object({
     }).strict(),
   }).strict()).min(1).max(50_000),
 }).strict()
+const usernameSchema = z.string().trim().min(3).max(32).regex(/^[A-Za-z0-9._-]+$/)
+const newAdminSchema = z.object({
+  firstName: z.string().trim().min(1).max(80),
+  lastName: z.string().trim().min(1).max(80),
+  email: z.string().trim().email().max(254),
+  username: usernameSchema,
+  salt: z.string().regex(/^[a-f0-9]{32}$/),
+  passwordHash: z.string().regex(/^[a-f0-9]{128}$/),
+}).strict()
 
 function openDatabase(filename) {
   mkdirSync(path.dirname(filename), { recursive: true, mode: 0o700 })
@@ -40,7 +50,7 @@ function openDatabase(filename) {
     database.exec('PRAGMA busy_timeout = 5000; PRAGMA foreign_keys = ON; PRAGMA journal_mode = WAL; PRAGMA synchronous = FULL;')
     database.exec('BEGIN IMMEDIATE')
     const version = database.prepare('PRAGMA user_version').get().user_version
-    if (version > 1) throw new Error('Database schema is newer than this app.')
+    if (version > 2) throw new Error('Database schema is newer than this app.')
     if (version < 1) {
       database.exec(`
         CREATE TABLE shops (
@@ -95,6 +105,21 @@ function openDatabase(filename) {
         PRAGMA user_version = 1;
       `)
     }
+    if (version < 2) {
+      database.exec(`CREATE TABLE users (
+        id TEXT PRIMARY KEY,
+        first_name TEXT NOT NULL,
+        last_name TEXT NOT NULL,
+        email TEXT NOT NULL COLLATE NOCASE UNIQUE,
+        username TEXT NOT NULL COLLATE NOCASE UNIQUE,
+        role TEXT NOT NULL CHECK(role IN ('admin', 'editor', 'reader')),
+        password_salt TEXT NOT NULL CHECK(length(password_salt) = 32),
+        password_hash TEXT NOT NULL CHECK(length(password_hash) = 128),
+        active INTEGER NOT NULL DEFAULT 1 CHECK(active IN (0, 1)),
+        created_at TEXT NOT NULL
+      ) STRICT;
+      PRAGMA user_version = 2;`)
+    }
     database.exec('COMMIT')
   } catch (error) {
     if (database.isTransaction) database.exec('ROLLBACK')
@@ -103,6 +128,47 @@ function openDatabase(filename) {
   }
 
   return {
+    userCount() {
+      return database.prepare('SELECT COUNT(*) AS count FROM users').get().count
+    },
+    findUserByUsername(username) {
+      const parsed = usernameSchema.parse(username)
+      return database.prepare(
+        'SELECT id, first_name AS firstName, last_name AS lastName, email, username, role, password_salt AS salt, password_hash AS passwordHash, active FROM users WHERE username = ? COLLATE NOCASE',
+      ).get(parsed) ?? null
+    },
+    createInitialAdmin(input) {
+      const parsed = newAdminSchema.parse(input)
+      database.exec('BEGIN IMMEDIATE')
+      try {
+        if (database.prepare('SELECT COUNT(*) AS count FROM users').get().count !== 0)
+          throw new Error('Admin account is already configured.')
+        const user = {
+          id: randomUUID(),
+          firstName: parsed.firstName,
+          lastName: parsed.lastName,
+          email: parsed.email.toLowerCase(),
+          username: parsed.username.toLowerCase(),
+          role: 'admin',
+          salt: parsed.salt,
+          passwordHash: parsed.passwordHash,
+          active: 1,
+          createdAt: new Date().toISOString(),
+        }
+        database.prepare(
+          'INSERT INTO users (id, first_name, last_name, email, username, role, password_salt, password_hash, active, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+        ).run(user.id, user.firstName, user.lastName, user.email, user.username, user.role, user.salt, user.passwordHash, user.active, user.createdAt)
+        database.exec('COMMIT')
+        return { id: user.id, firstName: user.firstName, lastName: user.lastName, email: user.email, username: user.username, role: user.role }
+      } catch (error) {
+        if (database.isTransaction) database.exec('ROLLBACK')
+        throw error
+      }
+    },
+    recordLogin(userId) {
+      database.prepare('UPDATE users SET active = 1 WHERE id = ?').run(z.string().uuid().parse(userId))
+      return true
+    },
     workspaceSummary() {
       const shops = database.prepare('SELECT COUNT(*) AS count FROM shops').get().count
       const counts = database.prepare('SELECT type, COUNT(*) AS count FROM products GROUP BY type').all()
