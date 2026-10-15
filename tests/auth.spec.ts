@@ -13,8 +13,36 @@ async function mockWooCommerce(application: ElectronApplication, key: string, se
       const url = new URL(String(input))
       if (url.origin !== 'https://shop.example') return original(input, options)
       const expected = `Basic ${Buffer.from(`${credentials.key}:${credentials.secret}`).toString('base64')}`
-      if (options?.method !== 'GET' || options.redirect !== 'error' || options.headers?.Authorization !== expected)
+      const json = (body: unknown, status = 200) => new Response(JSON.stringify(body), { status, headers: { 'content-type': 'application/json', 'x-wp-totalpages': '1' } })
+      if (options?.method !== 'GET' || options.redirect !== 'error')
         throw new Error('Unexpected shop request')
+      // WordPress core routes are read without WooCommerce keys.
+      if (url.pathname.startsWith('/wp-json/wp/v2/')) {
+        if (options.headers?.Authorization) throw new Error('Keys sent outside WooCommerce')
+        if (url.pathname === '/wp-json/wp/v2/taxonomies') return json({ product_material: { slug: 'product_material', name: 'Materialien', hierarchical: false, rest_base: 'materials', rest_namespace: 'wp/v2' } })
+        if (url.pathname === '/wp-json/wp/v2/materials') return json([{ id: 40, name: 'Baumwolle', slug: 'baumwolle', count: 6 }])
+        return json({ code: 'rest_no_route' }, 404)
+      }
+      if (options.headers?.Authorization !== expected) throw new Error('Unexpected shop request')
+      const termRoute = (title: string, properties: string[]) => ({ endpoints: [{ methods: ['GET'], args: { page: {}, per_page: {}, orderby: {}, order: {}, hide_empty: {} } }], schema: { title, properties: Object.fromEntries(properties.map((key) => [key, {}])) } })
+      if (url.pathname === '/wp-json/wc/v3') return json({ routes: {
+        '/wc/v3/products/categories': termRoute('product_cat', ['id', 'name', 'slug', 'parent', 'count']),
+        '/wc/v3/products/tags': termRoute('product_tag', ['id', 'name', 'slug', 'count']),
+        '/wc/v3/products/shipping_classes': termRoute('product_shipping_class', ['id', 'name', 'slug', 'count']),
+        '/wc/v3/products/delivery_times': termRoute('product_delivery_time', ['id', 'name', 'slug', 'count']),
+        '/wc/v3/products/seasons': termRoute('product_season', ['id', 'name', 'slug', 'count']),
+        '/wc/v3/marketplace/featured': { endpoints: [{ methods: ['GET'], args: [] }] },
+      } })
+      const taxonomyRoutes: Record<string, unknown[]> = {
+        '/wp-json/wc/v3/products/categories': [{ id: 4, name: 'Kleidung &amp; Mode', slug: 'kleidung', parent: 0, count: 12 }, { id: 5, name: 'Shirts', slug: 'shirts', parent: 4, count: 7 }],
+        '/wp-json/wc/v3/products/tags': [{ id: 8, name: 'Sale', slug: 'sale', count: 3 }],
+        '/wp-json/wc/v3/products/shipping_classes': [{ id: 11, name: 'Paket', slug: 'paket', count: 9 }],
+        '/wp-json/wc/v3/products/delivery_times': [{ id: 12, name: '2-3 Werktage', slug: '2-3-werktage', count: 5 }],
+        '/wp-json/wc/v3/products/attributes': [{ id: 1, name: 'Farbe', slug: 'pa_farbe', type: 'select', order_by: 'menu_order', has_archives: false }],
+        '/wp-json/wc/v3/products/attributes/1/terms': [{ id: 30, name: 'Rot', slug: 'rot', menu_order: 0, count: 4 }, { id: 31, name: 'Blau', slug: 'blau', menu_order: 1, count: 2 }],
+      }
+      if (url.pathname === '/wp-json/wc/v3/products/seasons') return json({ code: 'rest_forbidden' }, 403)
+      if (taxonomyRoutes[url.pathname]) return json(taxonomyRoutes[url.pathname])
       return new Response(JSON.stringify([{ id: 1, sku: 'A' }]), { headers: { 'content-type': 'application/json', 'x-wp-total': '25' } })
     }
   }, { key, secret })
@@ -117,6 +145,28 @@ test('creates the first admin before showing the app and requires login on the n
     await page.getByRole('button', { name: 'Verbindung pruefen', exact: true }).click()
     await expect(page.getByRole('status')).toContainText('25 Produkte')
     await page.screenshot({ path: testInfo.outputPath('shop-settings-desktop.png') })
+    await page.getByRole('button', { name: 'Taxonomien', exact: true }).click()
+    await expect(page.getByRole('heading', { name: 'Noch keine Taxonomien importiert' })).toBeVisible()
+    await page.getByRole('button', { name: 'Taxonomien importieren', exact: true }).click()
+    await expect(page.getByText('7 Taxonomien mit 8 Begriffen importiert.')).toBeVisible()
+    await expect(page.getByRole('cell', { name: '↳ Shirts' })).toBeVisible()
+    await expect(page.getByRole('cell', { name: 'Kleidung & Mode', exact: true })).toBeVisible()
+    await page.getByRole('navigation', { name: 'Taxonomien' }).getByRole('button', { name: /Farbe/ }).click()
+    await expect(page.getByRole('cell', { name: 'Blau', exact: true })).toBeVisible()
+    await page.getByRole('navigation', { name: 'Taxonomien' }).getByRole('button', { name: /Lieferzeiten/ }).click()
+    await expect(page.getByRole('cell', { name: '2-3 Werktage', exact: true })).toBeVisible()
+    await expect(page.getByText('PLUGINS & EIGENE', { exact: true })).toBeVisible()
+    await page.getByRole('navigation', { name: 'Taxonomien' }).getByRole('button', { name: /Materialien/ }).click()
+    await expect(page.getByRole('cell', { name: 'Baumwolle', exact: true })).toBeVisible()
+    await page.getByRole('navigation', { name: 'Taxonomien' }).getByRole('button', { name: /Season/ }).click()
+    await expect(page.getByRole('note')).toContainText('nicht lesbar')
+    await page.getByRole('navigation', { name: 'Taxonomien' }).getByRole('button', { name: /Kategorien/ }).click()
+    await expect(page.getByRole('cell', { name: '↳ Shirts' })).toBeVisible()
+    await page.screenshot({ path: testInfo.outputPath('taxonomies-desktop.png') })
+    await page.setViewportSize({ width: 600, height: 850 })
+    expect(await page.evaluate(() => document.documentElement.scrollWidth <= document.documentElement.clientWidth)).toBe(true)
+    await page.screenshot({ path: testInfo.outputPath('taxonomies-narrow.png') })
+    await page.setViewportSize({ width: 1440, height: 920 })
     await page.setViewportSize({ width: 600, height: 850 })
     expect(await page.evaluate(() => document.documentElement.scrollWidth <= document.documentElement.clientWidth)).toBe(true)
     await page.screenshot({ path: testInfo.outputPath('shop-settings-narrow.png') })
@@ -173,6 +223,8 @@ test('creates the first admin before showing the app and requires login on the n
     expect(await page.evaluate(() => window.catalogDesk!.testShopConnection(null))).toMatchObject({ ok: false })
     expect(await page.evaluate(() => window.catalogDesk!.saveShopConnection({ url: 'https://other.example/', consumerKey: 'ck_' + 'a'.repeat(40), consumerSecret: 'cs_' + 'b'.repeat(40) }))).toMatchObject({ ok: false })
     expect(await page.evaluate(() => window.catalogDesk!.deleteShopConnection())).toMatchObject({ ok: false })
+    expect(await page.evaluate(() => window.catalogDesk!.importTaxonomies())).toMatchObject({ ok: false, error: expect.stringContaining('Benutzerrolle') })
+    expect(await page.evaluate(() => window.catalogDesk!.taxonomyOverview())).toMatchObject({ ok: false })
     await page.getByRole('button', { name: 'Abmelden', exact: true }).click()
     await fillLogin(page)
     await page.getByRole('button', { name: 'Benutzer', exact: true }).click()

@@ -2,6 +2,10 @@ const { contextBridge, ipcRenderer } = require('electron')
 
 let sessionToken = null
 const authListeners = new Set()
+const taxonomyProgressListeners = new Set()
+ipcRenderer.on('catalog:v2:taxonomies-progress', (_event, progress) => {
+  for (const listener of taxonomyProgressListeners) listener(progress)
+})
 ipcRenderer.on('catalog:v2:auth-expired', () => {
   sessionToken = null
   for (const listener of authListeners) listener()
@@ -38,4 +42,8 @@ contextBridge.exposeInMainWorld('catalogDesk', {
   },
   workspaceSummary: () => authorized('catalog:v2:workspace-summary'),
   listProducts: (query) => authorized('catalog:v2:products-list', query),
+  importTaxonomies: () => authorized('catalog:v2:taxonomies-import'),
+  taxonomyOverview: () => authorized('catalog:v2:taxonomies-overview'),
+  listTaxonomyTerms: (query) => authorized('catalog:v2:taxonomies-terms', query),
+  onTaxonomyImportProgress: (listener) => { taxonomyProgressListeners.add(listener); return () => taxonomyProgressListeners.delete(listener) },
 })

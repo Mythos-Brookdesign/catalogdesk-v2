@@ -168,3 +168,57 @@ it('stores product families, variations and taxonomy relations atomically', () =
       database.close()
     }
   })
+
+it('replaces imported taxonomies, keeps tree order and removes vanished terms with their relations', () => {
+  const directory = mkdtempSync(path.join(os.tmpdir(), 'catalogdesk-v2-taxonomies-'))
+  paths.push(directory)
+  const database = databaseModule.openDatabase(path.join(directory, 'catalogdesk-v2.sqlite'))
+  const term = (id, name, parentId = 0) => ({ id, name, slug: name.toLowerCase(), parentId, count: id, menuOrder: 0, payload: { id, name } })
+  const taxonomy = (key, kind, terms, extra = {}) => ({ taxonomy: key, kind, label: key, route: `wc/v3/${key}`, hierarchical: key === 'product_cat', available: true, attribute: null, terms, ...extra })
+  try {
+    expect(database.taxonomyOverview()).toEqual({ shopUrl: null, importedAt: null, taxonomies: [] })
+    database.replaceTaxonomies({
+      shopUrl: 'https://shop.example/', importedAt: new Date().toISOString(),
+      taxonomies: [
+        taxonomy('product_cat', 'core', [term(4, 'Kleidung'), term(5, 'Shirts', 4), term(6, 'Accessoires'), term(7, 'Hosen', 4)]),
+        taxonomy('pa_farbe', 'attribute', [term(30, 'Rot')], { attribute: { id: 1, type: 'select', orderBy: 'menu_order', hasArchives: false } }),
+      ],
+    })
+    expect(database.workspaceSummary().shopCount).toBe(0)
+    const overview = database.taxonomyOverview()
+    expect(overview.shopUrl).toBe('https://shop.example/')
+    expect(overview.taxonomies.map((entry) => [entry.taxonomy, entry.termCount, entry.hierarchical])).toEqual([['product_cat', 4, true], ['pa_farbe', 1, false]])
+    expect(database.listTaxonomyTerms({ taxonomy: 'product_cat' }).terms.map((entry) => [entry.name, entry.depth])).toEqual([
+      ['Accessoires', 0], ['Kleidung', 0], ['Hosen', 1], ['Shirts', 1],
+    ])
+    expect(database.listTaxonomyTerms({ taxonomy: 'product_cat', query: 'shi' }).terms).toEqual([expect.objectContaining({ id: 5, path: 'Kleidung › Shirts' })])
+    expect(database.listTaxonomyTerms({ taxonomy: 'product_cat', pageSize: 2, page: 1 })).toMatchObject({ total: 4, terms: [{ name: 'Hosen' }, { name: 'Shirts' }] })
+
+    database.replaceCatalog({
+      shopUrl: 'https://shop.example/', importedAt: new Date().toISOString(),
+      products: [{ id: 20, parentId: null, type: 'simple', sku: 'TEE', name: 'T-Shirt', status: 'publish', payload: { id: 20 },
+        taxonomies: { categories: [{ id: 5, name: 'Shirts', slug: 'shirts' }], tags: [], brands: [] } }],
+    })
+    expect(database.workspaceSummary().shopCount).toBe(1)
+    expect(database.listTaxonomyTerms({ taxonomy: 'product_cat', query: 'Shirts' }).terms[0]).toMatchObject({ parentId: 4, count: 5 })
+
+    database.replaceTaxonomies({
+      shopUrl: 'https://shop.example/', importedAt: new Date().toISOString(),
+      taxonomies: [taxonomy('product_cat', 'core', [term(4, 'Kleidung')]), taxonomy('product_unit', 'custom', [term(60, 'kg')])],
+    })
+    database.replaceTaxonomies({
+      shopUrl: 'https://shop.example/', importedAt: new Date().toISOString(),
+      taxonomies: [taxonomy('product_cat', 'core', [term(4, 'Kleidung')]), taxonomy('product_unit', 'custom', [], { available: false })],
+    })
+    expect(database.taxonomyOverview().taxonomies.map((entry) => [entry.taxonomy, entry.available, entry.termCount])).toEqual([['product_cat', true, 1], ['product_unit', false, 1]])
+    expect(database.listTaxonomyTerms({ taxonomy: 'product_cat' }).total).toBe(1)
+    expect(database.listTaxonomyTerms({ taxonomy: 'pa_farbe' }).total).toBe(0)
+    expect(() => database.replaceTaxonomies({
+      shopUrl: 'https://shop.example/', importedAt: new Date().toISOString(),
+      taxonomies: [taxonomy('product_cat', 'core', [term(4, 'A'), term(4, 'B')])],
+    })).toThrow('Duplicate')
+    expect(database.listTaxonomyTerms({ taxonomy: 'product_cat' }).terms[0].name).toBe('Kleidung')
+  } finally {
+    database.close()
+  }
+})

@@ -33,6 +33,35 @@ const catalogSchema = z.object({
     }).strict(),
   }).strict()).min(1).max(50_000),
 }).strict()
+const taxonomyImportSchema = z.object({
+  shopUrl: shopUrlSchema,
+  importedAt: z.string().datetime(),
+  taxonomies: z.array(z.object({
+    taxonomy: z.string().min(1).max(200),
+    kind: z.enum(['core', 'custom', 'attribute']),
+    label: z.string().max(1000),
+    route: z.string().max(500),
+    hierarchical: z.boolean(),
+    available: z.boolean(),
+    attribute: z.object({ id: z.number().int().positive(), type: z.string().max(80), orderBy: z.string().max(80), hasArchives: z.boolean() }).strict().nullable(),
+    terms: z.array(z.object({
+      id: z.number().int().positive(),
+      name: z.string().max(1000),
+      slug: z.string().max(1000),
+      parentId: z.number().int().nonnegative(),
+      count: z.number().int().nonnegative(),
+      menuOrder: z.number().int(),
+      payload: z.record(z.string(), z.unknown()),
+    }).strict()).max(50_000),
+  }).strict()).min(1).max(1000),
+}).strict()
+const taxonomyTermsQuerySchema = z.object({
+  shopUrl: shopUrlSchema.optional(),
+  taxonomy: z.string().min(1).max(200),
+  query: z.string().trim().max(200).default(''),
+  page: z.number().int().min(0).max(1_000_000).default(0),
+  pageSize: z.number().int().min(1).max(200).default(100),
+}).strict()
 const usernameSchema = z.string().trim().min(3).max(32).regex(/^[A-Za-z0-9._-]+$/)
 const newAdminSchema = z.object({
   firstName: z.string().trim().min(1).max(80),
@@ -58,7 +87,7 @@ function openDatabase(filename) {
     database.exec('PRAGMA busy_timeout = 5000; PRAGMA foreign_keys = ON; PRAGMA journal_mode = WAL; PRAGMA synchronous = FULL;')
     database.exec('BEGIN IMMEDIATE')
     const version = database.prepare('PRAGMA user_version').get().user_version
-    if (version > 4) throw new Error('Database schema is newer than this app.')
+    if (version > 7) throw new Error('Database schema is newer than this app.')
     if (version < 1) {
       database.exec(`
         CREATE TABLE shops (
@@ -153,11 +182,80 @@ function openDatabase(filename) {
       INSERT INTO app_settings VALUES ('theme', 'light');
       PRAGMA user_version = 4;`)
     }
+    if (version < 5) {
+      const columns = new Set(database.prepare('PRAGMA table_info(taxonomy_terms)').all().map((column) => column.name))
+      for (const [column, definition] of [
+        ['parent_id', 'INTEGER NOT NULL DEFAULT 0 CHECK(parent_id >= 0)'],
+        ['product_count', 'INTEGER NOT NULL DEFAULT 0 CHECK(product_count >= 0)'],
+        ['menu_order', 'INTEGER NOT NULL DEFAULT 0'],
+      ]) if (!columns.has(column)) database.exec(`ALTER TABLE taxonomy_terms ADD COLUMN ${column} ${definition}`)
+      database.exec(`CREATE INDEX IF NOT EXISTS taxonomy_terms_parent ON taxonomy_terms(shop_url, taxonomy, parent_id);
+        CREATE TABLE IF NOT EXISTS taxonomies (
+          shop_url TEXT NOT NULL REFERENCES shops(shop_url) ON DELETE CASCADE,
+          taxonomy TEXT NOT NULL,
+          kind TEXT NOT NULL CHECK(kind IN ('category', 'tag', 'brand', 'shipping_class', 'attribute')),
+          label TEXT NOT NULL,
+          hierarchical INTEGER NOT NULL CHECK(hierarchical IN (0, 1)),
+          available INTEGER NOT NULL CHECK(available IN (0, 1)),
+          attribute TEXT CHECK(attribute IS NULL OR json_valid(attribute)),
+          position INTEGER NOT NULL,
+          imported_at TEXT NOT NULL,
+          PRIMARY KEY(shop_url, taxonomy)
+        ) STRICT;
+        PRAGMA user_version = 5;`)
+    }
+    if (version < 6) {
+      database.exec(`ALTER TABLE taxonomies RENAME TO taxonomies_v5;
+        CREATE TABLE taxonomies (
+          shop_url TEXT NOT NULL REFERENCES shops(shop_url) ON DELETE CASCADE,
+          taxonomy TEXT NOT NULL,
+          kind TEXT NOT NULL CHECK(kind IN ('category', 'tag', 'brand', 'shipping_class', 'delivery_time', 'unit', 'manufacturer', 'price_label', 'attribute')),
+          label TEXT NOT NULL,
+          hierarchical INTEGER NOT NULL CHECK(hierarchical IN (0, 1)),
+          available INTEGER NOT NULL CHECK(available IN (0, 1)),
+          attribute TEXT CHECK(attribute IS NULL OR json_valid(attribute)),
+          position INTEGER NOT NULL,
+          imported_at TEXT NOT NULL,
+          PRIMARY KEY(shop_url, taxonomy)
+        ) STRICT;
+        INSERT INTO taxonomies SELECT shop_url, taxonomy, kind, label, hierarchical, available, attribute, position, imported_at FROM taxonomies_v5;
+        DROP TABLE taxonomies_v5;
+        PRAGMA user_version = 6;`)
+    }
+    if (version < 7) {
+      // Taxonomies are discovered from the shop, so kinds are generic and the REST route is kept for later syncs.
+      database.exec(`ALTER TABLE taxonomies RENAME TO taxonomies_v6;
+        CREATE TABLE taxonomies (
+          shop_url TEXT NOT NULL REFERENCES shops(shop_url) ON DELETE CASCADE,
+          taxonomy TEXT NOT NULL,
+          kind TEXT NOT NULL CHECK(kind IN ('core', 'custom', 'attribute')),
+          label TEXT NOT NULL,
+          route TEXT NOT NULL,
+          hierarchical INTEGER NOT NULL CHECK(hierarchical IN (0, 1)),
+          available INTEGER NOT NULL CHECK(available IN (0, 1)),
+          attribute TEXT CHECK(attribute IS NULL OR json_valid(attribute)),
+          position INTEGER NOT NULL,
+          imported_at TEXT NOT NULL,
+          PRIMARY KEY(shop_url, taxonomy)
+        ) STRICT;
+        INSERT INTO taxonomies SELECT shop_url, taxonomy,
+          CASE WHEN kind = 'attribute' THEN 'attribute' WHEN kind IN ('category', 'tag', 'brand', 'shipping_class') THEN 'core' ELSE 'custom' END,
+          label, '', hierarchical, available, attribute, position, imported_at FROM taxonomies_v6;
+        DROP TABLE taxonomies_v6;
+        PRAGMA user_version = 7;`)
+    }
     database.exec('COMMIT')
   } catch (error) {
     if (database.isTransaction) database.exec('ROLLBACK')
     database.close()
     throw error
+  }
+
+  // Taxonomy imports create a shop row too; only shops with products count as catalog imports.
+  const catalogShop = 'EXISTS (SELECT 1 FROM products WHERE products.shop_url = shops.shop_url)'
+
+  function taxonomyShop(shopUrl) {
+    return shopUrl ?? database.prepare('SELECT shop_url FROM taxonomies ORDER BY imported_at DESC LIMIT 1').get()?.shop_url ?? null
   }
 
   return {
@@ -256,9 +354,9 @@ function openDatabase(filename) {
       return true
     },
     workspaceSummary() {
-      const shops = database.prepare('SELECT COUNT(*) AS count FROM shops').get().count
+      const shops = database.prepare(`SELECT COUNT(*) AS count FROM shops WHERE ${catalogShop}`).get().count
       const counts = database.prepare('SELECT type, COUNT(*) AS count FROM products GROUP BY type').all()
-      const latestShop = database.prepare('SELECT shop_url AS shopUrl, imported_at AS importedAt FROM shops ORDER BY imported_at DESC LIMIT 1').get() ?? null
+      const latestShop = database.prepare(`SELECT shop_url AS shopUrl, imported_at AS importedAt FROM shops WHERE ${catalogShop} ORDER BY imported_at DESC LIMIT 1`).get() ?? null
       return {
         shopCount: shops,
         latestShopUrl: latestShop?.shopUrl ?? null,
@@ -271,7 +369,7 @@ function openDatabase(filename) {
     },
     listProducts(input = {}) {
       const parsed = searchSchema.parse(input)
-      const shopUrl = parsed.shopUrl ?? database.prepare('SELECT shop_url FROM shops ORDER BY imported_at DESC LIMIT 1').get()?.shop_url
+      const shopUrl = parsed.shopUrl ?? database.prepare(`SELECT shop_url FROM shops WHERE ${catalogShop} ORDER BY imported_at DESC LIMIT 1`).get()?.shop_url
       if (!shopUrl) return { products: [], total: 0, page: parsed.page, pageSize: parsed.pageSize }
       const where = ['shop_url = ?']
       const values = [shopUrl]
@@ -297,7 +395,7 @@ function openDatabase(filename) {
         database.prepare('INSERT INTO shops (shop_url, imported_at) VALUES (?, ?) ON CONFLICT(shop_url) DO UPDATE SET imported_at = excluded.imported_at').run(parsed.shopUrl, parsed.importedAt)
         database.prepare('DELETE FROM products WHERE shop_url = ?').run(parsed.shopUrl)
         const insertProduct = database.prepare('INSERT INTO products (shop_url, product_id, parent_id, type, sku, name, status, payload) VALUES (?, ?, ?, ?, ?, ?, ?, ?)')
-        const insertTerm = database.prepare('INSERT INTO taxonomy_terms (shop_url, taxonomy, term_id, name, slug, payload) VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT(shop_url, taxonomy, term_id) DO UPDATE SET name = excluded.name, slug = excluded.slug, payload = excluded.payload')
+        const insertTerm = database.prepare('INSERT INTO taxonomy_terms (shop_url, taxonomy, term_id, name, slug, payload) VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT(shop_url, taxonomy, term_id) DO UPDATE SET name = excluded.name, slug = excluded.slug')
         const insertRelation = database.prepare('INSERT INTO product_taxonomies (shop_url, product_id, taxonomy, term_id) VALUES (?, ?, ?, ?)')
         const insertAttribute = database.prepare('INSERT INTO product_attributes (shop_url, product_id, attribute_position, attribute_id, name, slug, variation, options) VALUES (?, ?, ?, ?, ?, ?, ?, ?)')
         for (const product of parsed.products) {
@@ -320,6 +418,81 @@ function openDatabase(filename) {
         throw error
       }
       return this.workspaceSummary()
+    },
+    replaceTaxonomies(input) {
+      const parsed = taxonomyImportSchema.parse(input)
+      const keys = new Set()
+      let termTotal = 0
+      for (const entry of parsed.taxonomies) {
+        if (keys.has(entry.taxonomy)) throw new Error('Duplicate WooCommerce taxonomy.')
+        keys.add(entry.taxonomy)
+        if (new Set(entry.terms.map((term) => term.id)).size !== entry.terms.length) throw new Error('Duplicate WooCommerce term ID.')
+        termTotal += entry.terms.length
+      }
+      if (termTotal > 200_000) throw new Error('Too many taxonomy terms.')
+      const imported = new Set(parsed.taxonomies.flatMap((entry) => entry.terms.map((term) => `${entry.taxonomy}\u0000${term.id}`)))
+      // Terms of taxonomies the shop did not let us read this time are kept instead of being wiped.
+      const unreadable = new Set(parsed.taxonomies.filter((entry) => !entry.available).map((entry) => entry.taxonomy))
+      database.exec('BEGIN IMMEDIATE')
+      try {
+        database.prepare('INSERT INTO shops (shop_url, imported_at) VALUES (?, ?) ON CONFLICT(shop_url) DO NOTHING').run(parsed.shopUrl, parsed.importedAt)
+        const deleteRelations = database.prepare('DELETE FROM product_taxonomies WHERE shop_url = ? AND taxonomy = ? AND term_id = ?')
+        const deleteTerm = database.prepare('DELETE FROM taxonomy_terms WHERE shop_url = ? AND taxonomy = ? AND term_id = ?')
+        for (const { taxonomy, termId } of database.prepare('SELECT taxonomy, term_id AS termId FROM taxonomy_terms WHERE shop_url = ?').all(parsed.shopUrl)) {
+          if (unreadable.has(taxonomy) || imported.has(`${taxonomy}\u0000${termId}`)) continue
+          deleteRelations.run(parsed.shopUrl, taxonomy, termId)
+          deleteTerm.run(parsed.shopUrl, taxonomy, termId)
+        }
+        database.prepare('DELETE FROM taxonomies WHERE shop_url = ?').run(parsed.shopUrl)
+        const insertTaxonomy = database.prepare('INSERT INTO taxonomies (shop_url, taxonomy, kind, label, route, hierarchical, available, attribute, position, imported_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)')
+        const upsertTerm = database.prepare(`INSERT INTO taxonomy_terms (shop_url, taxonomy, term_id, name, slug, payload, parent_id, product_count, menu_order) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+          ON CONFLICT(shop_url, taxonomy, term_id) DO UPDATE SET name = excluded.name, slug = excluded.slug, payload = excluded.payload, parent_id = excluded.parent_id, product_count = excluded.product_count, menu_order = excluded.menu_order`)
+        for (const [position, entry] of parsed.taxonomies.entries()) {
+          insertTaxonomy.run(parsed.shopUrl, entry.taxonomy, entry.kind, entry.label, entry.route, entry.hierarchical ? 1 : 0, entry.available ? 1 : 0, entry.attribute ? JSON.stringify(entry.attribute) : null, position, parsed.importedAt)
+          for (const term of entry.terms)
+            upsertTerm.run(parsed.shopUrl, entry.taxonomy, term.id, term.name, term.slug, JSON.stringify(term.payload), term.parentId, term.count, term.menuOrder)
+        }
+        database.exec('COMMIT')
+      } catch (error) {
+        if (database.isTransaction) database.exec('ROLLBACK')
+        throw error
+      }
+      return this.taxonomyOverview({ shopUrl: parsed.shopUrl })
+    },
+    taxonomyOverview(input = {}) {
+      const parsed = z.object({ shopUrl: shopUrlSchema.optional() }).strict().parse(input)
+      const shopUrl = taxonomyShop(parsed.shopUrl)
+      if (!shopUrl) return { shopUrl: null, importedAt: null, taxonomies: [] }
+      const taxonomies = database.prepare(`SELECT t.taxonomy, t.kind, t.label, t.route, t.hierarchical, t.available, t.attribute, t.imported_at AS importedAt,
+          (SELECT COUNT(*) FROM taxonomy_terms terms WHERE terms.shop_url = t.shop_url AND terms.taxonomy = t.taxonomy) AS termCount
+        FROM taxonomies t WHERE t.shop_url = ? ORDER BY t.position`).all(shopUrl)
+        .map((row) => ({ ...row, hierarchical: row.hierarchical === 1, available: row.available === 1, attribute: row.attribute ? JSON.parse(row.attribute) : null }))
+      return { shopUrl, importedAt: taxonomies[0]?.importedAt ?? null, taxonomies }
+    },
+    listTaxonomyTerms(input) {
+      const parsed = taxonomyTermsQuerySchema.parse(input)
+      const empty = { terms: [], total: 0, page: parsed.page, pageSize: parsed.pageSize }
+      const shopUrl = taxonomyShop(parsed.shopUrl)
+      if (!shopUrl) return empty
+      const taxonomy = database.prepare('SELECT hierarchical FROM taxonomies WHERE shop_url = ? AND taxonomy = ?').get(shopUrl, parsed.taxonomy)
+      if (!taxonomy) return empty
+      // Hierarchical terms are ordered as a tree: parents first, children by name below them.
+      const tree = `WITH RECURSIVE tree(term_id, path, sort_key, depth) AS (
+          SELECT t.term_id, t.name, lower(t.name) || char(2) || printf('%012d', t.term_id), 0 FROM taxonomy_terms t
+          WHERE t.shop_url = ?1 AND t.taxonomy = ?2 AND (t.parent_id = 0 OR ?3 = 0 OR NOT EXISTS (
+            SELECT 1 FROM taxonomy_terms p WHERE p.shop_url = t.shop_url AND p.taxonomy = t.taxonomy AND p.term_id = t.parent_id))
+          UNION ALL
+          SELECT c.term_id, tree.path || ' › ' || c.name, tree.sort_key || char(1) || lower(c.name) || char(2) || printf('%012d', c.term_id), tree.depth + 1
+          FROM taxonomy_terms c JOIN tree ON c.parent_id = tree.term_id
+          WHERE ?3 = 1 AND c.shop_url = ?1 AND c.taxonomy = ?2 AND tree.depth < 50
+        )`
+      const filter = parsed.query ? `AND (t.name LIKE ?4 ESCAPE '\\' OR t.slug LIKE ?4 ESCAPE '\\')` : ''
+      const values = [shopUrl, parsed.taxonomy, taxonomy.hierarchical, ...(parsed.query ? [`%${parsed.query.replace(/[\\%_]/g, '\\$&')}%`] : [])]
+      const from = `FROM tree JOIN taxonomy_terms t ON t.shop_url = ?1 AND t.taxonomy = ?2 AND t.term_id = tree.term_id WHERE 1 = 1 ${filter}`
+      const total = database.prepare(`${tree} SELECT COUNT(*) AS total ${from}`).get(...values).total
+      const terms = database.prepare(`${tree} SELECT t.term_id AS id, t.name, t.slug, t.parent_id AS parentId, t.product_count AS count, t.menu_order AS menuOrder, tree.path, tree.depth
+        ${from} ORDER BY ${taxonomy.hierarchical ? 'tree.sort_key' : 't.name COLLATE NOCASE, t.term_id'} LIMIT ${parsed.pageSize} OFFSET ${parsed.page * parsed.pageSize}`).all(...values)
+      return { terms, total, page: parsed.page, pageSize: parsed.pageSize }
     },
     close() { database.close() },
   }

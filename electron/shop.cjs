@@ -15,6 +15,14 @@ const updateSchema = z.object({
   consumerSecret: z.string().trim().max(43),
 }).strict()
 
+class WooError extends Error {
+  constructor(message, status = null) {
+    super(message)
+    this.name = 'WooError'
+    this.status = status
+  }
+}
+
 function normalizeUrl(value) {
   const url = new URL(shopUrlSchema.parse(value))
   url.pathname = url.pathname.replace(/\/+$/, '') + '/'
@@ -36,48 +44,66 @@ function resolveConnection(input, stored) {
   return connection.data
 }
 
-async function testConnection(connection, fetcher) {
+// Read-only GET below wp-json/ with timeout, size bound and no redirects. Errors never contain secrets.
+// Requests outside wc/ are sent without credentials: WordPress would reject WooCommerce keys there.
+async function wooRequest(connection, route, params, fetcher, { maxBytes = 64 * 1024, timeoutMs = 15_000 } = {}) {
   const parsed = connectionSchema.safeParse(connection)
-  if (!parsed.success) return { ok: false, error: 'Ungueltige Shopverbindung.' }
+  if (!parsed.success) throw new WooError('Ungueltige Shopverbindung.')
   const { url, consumerKey, consumerSecret } = parsed.data
-  const endpoint = new URL('wp-json/wc/v3/products', normalizeUrl(url))
-  endpoint.search = new URLSearchParams({ per_page: '1', page: '1', status: 'any', _fields: 'id,sku' }).toString()
+  const endpoint = new URL(`wp-json/${route}`, normalizeUrl(url))
+  endpoint.search = new URLSearchParams(params).toString()
+  const authenticated = route === 'wc/v3' || route.startsWith('wc/v3/')
   const controller = new AbortController()
-  const timeout = setTimeout(() => controller.abort(), 15_000)
+  const timeout = setTimeout(() => controller.abort(), timeoutMs)
   try {
     const response = await fetcher(endpoint.toString(), {
-      method: 'GET', headers: { Authorization: `Basic ${Buffer.from(`${consumerKey}:${consumerSecret}`).toString('base64')}`, Accept: 'application/json' },
+      method: 'GET',
+      headers: authenticated ? { Authorization: `Basic ${Buffer.from(`${consumerKey}:${consumerSecret}`).toString('base64')}`, Accept: 'application/json' } : { Accept: 'application/json' },
       credentials: 'omit', redirect: 'error', cache: 'no-store', signal: controller.signal,
     })
     if (!response.ok) {
       await response.body?.cancel()
-      return { ok: false, error: response.status === 401 || response.status === 403
+      throw new WooError(response.status === 401 || response.status === 403
         ? 'Zugriff verweigert. API-Schluessel und Leserechte pruefen.'
-        : `WooCommerce antwortet mit HTTP ${response.status}. Shopadresse und REST-API pruefen.` }
+        : `WooCommerce antwortet mit HTTP ${response.status}. Shopadresse und REST-API pruefen.`, response.status)
     }
     if (!response.headers.get('content-type')?.toLowerCase().includes('application/json')) {
       await response.body?.cancel()
-      return { ok: false, error: 'Der Shop liefert kein JSON.' }
+      throw new WooError('Der Shop liefert kein JSON.')
     }
     const reader = response.body?.getReader()
-    if (!reader) return { ok: false, error: 'Die API-Antwort ist leer.' }
+    if (!reader) throw new WooError('Die API-Antwort ist leer.')
     const chunks = []
     let bytes = 0
     while (true) {
       const { done, value } = await reader.read()
       if (done) break
       bytes += value.byteLength
-      if (bytes > 64 * 1024) { await reader.cancel(); return { ok: false, error: 'Die API-Antwort ist zu gross.' } }
+      if (bytes > maxBytes) { await reader.cancel(); throw new WooError('Die API-Antwort ist zu gross.') }
       chunks.push(Buffer.from(value))
     }
-    const products = z.array(z.object({ id: z.number().int().positive(), sku: z.string() })).max(1).safeParse(JSON.parse(Buffer.concat(chunks).toString('utf8')))
-    const total = response.headers.get('x-wp-total')
-    if (!products.success || total === null || !/^\d+$/.test(total) || !Number.isSafeInteger(Number(total)) || Number(total) < products.data.length)
-      return { ok: false, error: 'Die Antwort entspricht nicht dem WooCommerce-Format.' }
-    return { ok: true, url: normalizeUrl(url), productCount: Number(total), checkedAt: new Date().toISOString() }
-  } catch {
-    return { ok: false, error: controller.signal.aborted ? 'Zeitlimit erreicht. Der Shop antwortet nicht.' : 'Verbindung fehlgeschlagen. HTTPS-Zertifikat und Erreichbarkeit pruefen. Weiterleitungen sind nicht erlaubt.' }
+    let data
+    try { data = JSON.parse(Buffer.concat(chunks).toString('utf8')) }
+    catch { throw new WooError('Die Antwort entspricht nicht dem WooCommerce-Format.') }
+    return { data, headers: response.headers }
+  } catch (error) {
+    if (error instanceof WooError) throw error
+    throw new WooError(controller.signal.aborted ? 'Zeitlimit erreicht. Der Shop antwortet nicht.' : 'Verbindung fehlgeschlagen. HTTPS-Zertifikat und Erreichbarkeit pruefen. Weiterleitungen sind nicht erlaubt.')
   } finally { clearTimeout(timeout) }
 }
 
-module.exports = { connectionSchema, resolveConnection, testConnection }
+async function testConnection(connection, fetcher) {
+  if (!connectionSchema.safeParse(connection).success) return { ok: false, error: 'Ungueltige Shopverbindung.' }
+  try {
+    const { data, headers } = await wooRequest(connection, 'wc/v3/products', { per_page: '1', page: '1', status: 'any', _fields: 'id,sku' }, fetcher)
+    const products = z.array(z.object({ id: z.number().int().positive(), sku: z.string() })).max(1).safeParse(data)
+    const total = headers.get('x-wp-total')
+    if (!products.success || total === null || !/^\d+$/.test(total) || !Number.isSafeInteger(Number(total)) || Number(total) < products.data.length)
+      return { ok: false, error: 'Die Antwort entspricht nicht dem WooCommerce-Format.' }
+    return { ok: true, url: normalizeUrl(connection.url), productCount: Number(total), checkedAt: new Date().toISOString() }
+  } catch (error) {
+    return { ok: false, error: error instanceof WooError ? error.message : 'Verbindung fehlgeschlagen.' }
+  }
+}
+
+module.exports = { WooError, connectionSchema, normalizeUrl, resolveConnection, testConnection, wooRequest }

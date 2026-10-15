@@ -20,6 +20,7 @@ import { DashboardPage } from './features/dashboard/DashboardPage'
 import { UsersPage } from './features/users/UsersPage'
 import { ShopConnectionPage } from './features/settings/SettingsPage'
 import { AppearanceSettingsPage } from './features/settings/AppearanceSettingsPage'
+import { TaxonomiesPage } from './features/taxonomies/TaxonomiesPage'
 import type { CatalogUser } from './types/desktop'
 
 type Section =
@@ -152,7 +153,8 @@ function App({
         {canAccess(activeSection) && activeSection === 'users' && <UsersPage currentUser={currentUser} />}
         {canAccess(activeSection) && activeSection === 'settings' && <AppearanceSettingsPage />}
         {canAccess(activeSection) && activeSection === 'shop' && <ShopConnectionPage />}
-        {canAccess(activeSection) && !['dashboard', 'products', 'users', 'settings', 'shop'].includes(activeSection) && (
+        {canAccess(activeSection) && activeSection === 'taxonomies' && <TaxonomiesPage />}
+        {canAccess(activeSection) && !['dashboard', 'products', 'users', 'settings', 'shop', 'taxonomies'].includes(activeSection) && (
           <EmptySection title={sectionTitles[activeSection]} />
         )}
       </div>

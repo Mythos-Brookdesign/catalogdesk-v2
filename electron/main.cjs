@@ -5,7 +5,8 @@ const { pathToFileURL } = require('node:url')
 const { createDatabaseClient } = require('./database-client.cjs')
 const { createAuthenticator } = require('./auth.cjs')
 const { createShopStore } = require('./shop-store.cjs')
-const { resolveConnection, testConnection } = require('./shop.cjs')
+const { WooError, resolveConnection, testConnection } = require('./shop.cjs')
+const { importTaxonomies } = require('./taxonomies.cjs')
 
 const development = !app.isPackaged && process.argv.includes('--dev')
 const entryUrl = development ? 'http://127.0.0.1:5179/' : 'catalog://app/index.html'
@@ -118,6 +119,39 @@ app.whenReady().then(async () => {
         return { ok: false, error: error.name === 'ZodError' ? 'Shopadresse und API-Schluessel pruefen.' : error.message }
       } finally {
         if (acquired) shopOperationRunning = false
+      }
+    })
+  }
+  ipcMain.handle('catalog:v2:taxonomies-import', async (event, envelope) => {
+    let acquired = false
+    try {
+      authorize(event, envelope, 'taxonomies')
+      if (shopOperationRunning) return { ok: false, error: 'Eine Shopaktion laeuft bereits.' }
+      shopOperationRunning = true
+      acquired = true
+      const connection = await shopStore.load()
+      if (!connection) return { ok: false, error: 'Keine Shopverbindung gespeichert. Bitte zuerst unter Shopverbindung einrichten.' }
+      const result = await importTaxonomies(connection, (url, options) => net.fetch(url, options), (progress) => {
+        if (!event.sender.isDestroyed()) event.sender.send('catalog:v2:taxonomies-progress', progress)
+      })
+      authorize(event, envelope, 'taxonomies')
+      return { ok: true, value: await database.request('replaceTaxonomies', result) }
+    } catch (error) {
+      const safe = error instanceof WooError || /^(Sitzung|Fuer diese|Shopverbindung|Gespeicherte|Kein sicherer|Datenbank)/.test(error.message ?? '')
+      return { ok: false, error: safe ? error.message : 'Taxonomien konnten nicht importiert werden.' }
+    } finally {
+      if (acquired) shopOperationRunning = false
+    }
+  })
+  for (const [channel, operation] of [['taxonomies-overview', 'taxonomyOverview'], ['taxonomies-terms', 'listTaxonomyTerms']]) {
+    ipcMain.handle(`catalog:v2:${channel}`, async (event, envelope) => {
+      try {
+        const { payload } = authorize(event, envelope, 'taxonomies')
+        const shopUrl = (await shopStore.summary().catch(() => null))?.url
+        const query = operation === 'taxonomyOverview' ? { shopUrl } : { ...(payload && typeof payload === 'object' ? payload : {}), shopUrl }
+        return { ok: true, value: await database.request(operation, query) }
+      } catch (error) {
+        return { ok: false, error: /^(Sitzung|Fuer diese)/.test(error.message ?? '') ? error.message : 'Taxonomien konnten nicht geladen werden.' }
       }
     })
   }

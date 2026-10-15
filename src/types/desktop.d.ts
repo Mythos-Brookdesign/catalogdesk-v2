@@ -69,6 +69,23 @@ export type AdminProfile = {
 export type ShopConnectionInput = { url: string; consumerKey: string; consumerSecret: string }
 export type ShopConnectionCheck = { url: string; productCount: number; checkedAt: string }
 export type Theme = 'light' | 'dark'
+export type TaxonomyKind = 'core' | 'custom' | 'attribute'
+export type TaxonomySummary = {
+  taxonomy: string
+  kind: TaxonomyKind
+  label: string
+  route: string
+  hierarchical: boolean
+  available: boolean
+  attribute: { id: number; type: string; orderBy: string; hasArchives: boolean } | null
+  importedAt: string
+  termCount: number
+}
+export type TaxonomyOverview = { shopUrl: string | null; importedAt: string | null; taxonomies: TaxonomySummary[] }
+export type TaxonomyTerm = { id: number; name: string; slug: string; parentId: number; count: number; menuOrder: number; path: string; depth: number }
+export type TaxonomyTermQuery = { taxonomy: string; query?: string; page?: number; pageSize?: number }
+export type TaxonomyTermPage = { terms: TaxonomyTerm[]; total: number; page: number; pageSize: number }
+export type TaxonomyImportProgress = { label: string; completed: number; total: number }
 
 declare global {
   interface Window {
@@ -89,6 +106,10 @@ declare global {
       logout: () => Promise<boolean>
       workspaceSummary: () => Promise<WorkspaceSummary>
       listProducts: (query?: ProductQuery) => Promise<ProductPage>
+      importTaxonomies: () => Promise<UserResult<TaxonomyOverview>>
+      taxonomyOverview: () => Promise<UserResult<TaxonomyOverview>>
+      listTaxonomyTerms: (query: TaxonomyTermQuery) => Promise<UserResult<TaxonomyTermPage>>
+      onTaxonomyImportProgress: (listener: (progress: TaxonomyImportProgress) => void) => () => void
     }
   }
 }
