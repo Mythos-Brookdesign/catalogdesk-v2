@@ -14,3 +14,7 @@
 ## Shop writes
 - Writes to WooCommerce always go through an outbox table and a sync module (`taxonomy-sync.cjs`, `product-sync.cjs`) run by `runShopSync()` in Main: queue locally first, send immediately when online, keep queued offline.
 - Before overwriting shop data that others can change, read the current shop state and treat fields changed there since the local base as conflicts; send only changed fields and verify the shop's answer.
+
+## Plugin knowledge
+- Never hard-code knowledge about a specific WordPress plugin in the core (`taxonomies.cjs`, `products.cjs`, `database.cjs`, UI). Put it into a module in `electron/modules/` and register it in `modules/index.cjs`.
+- The core must keep working without the module (generic discovery, neutral labels); modules only add meaning. Licensing hooks in at `isLicensed()` only; whether a module is used is decided by `activeModuleIds()` in the database (detected, licensed, switched on). Module effects must be applied when reading or recomputed on toggle, never baked into imported data.

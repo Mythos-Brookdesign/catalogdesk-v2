@@ -50,9 +50,12 @@ it('discovers all product taxonomies from the REST index, WordPress and global a
   expect(result.shopUrl).toBe('https://shop.example/')
   expect(result.taxonomies.map((entry) => [entry.taxonomy, entry.kind, entry.label, entry.terms.length])).toEqual([
     ['product_cat', 'core', 'Kategorien', 2], ['product_tag', 'core', 'Schlagwoerter', 1],
-    ['product_delivery_time', 'custom', 'Lieferzeiten', 1], ['product_nutrient', 'custom', 'Naehrwerte', 1],
+    ['product_delivery_time', 'custom', 'Delivery time', 1], ['product_nutrient', 'custom', 'Nutrient', 1],
     ['product_season', 'custom', 'Saison & Anlass', 1], ['pa_farbe', 'attribute', 'Farbe', 1],
   ])
+  // Names come from the shop or are generated; plugin modules are detected here and labelled by the database.
+  expect(result.modules).toEqual(['germanized'])
+  expect(result.taxonomies.map((entry) => entry.labelSource)).toEqual(['core', 'core', 'generated', 'generated', 'wordpress', 'wordpress'])
   expect(result.taxonomies[0].terms).toEqual([
     expect.objectContaining({ id: 4, name: 'Kleidung & Mode', parentId: 0, count: 3 }),
     expect.objectContaining({ id: 5, parentId: 4 }),

@@ -4,6 +4,8 @@ const path = require('node:path')
 const { randomUUID } = require('node:crypto')
 const { z } = require('zod')
 const { scalarFields, variationStatuses, termFieldName, isTerm, isTermList, same } = require('./product-fields.cjs')
+const modules = require('./modules/index.cjs')
+const { humanize } = require('./taxonomies.cjs')
 
 const shopUrlSchema = z.string().url().max(2048).refine((value) => {
   const url = new URL(value)
@@ -45,6 +47,7 @@ const taxonomyImportSchema = z.object({
     taxonomy: z.string().min(1).max(200),
     kind: z.enum(['core', 'custom', 'attribute']),
     label: z.string().max(1000),
+    labelSource: z.enum(['core', 'wordpress', 'generated']).default('wordpress'),
     route: z.string().max(500),
     hierarchical: z.boolean(),
     available: z.boolean(),
@@ -60,6 +63,7 @@ const taxonomyImportSchema = z.object({
     }).strict()).max(50_000),
   }).strict()).min(1).max(1000),
   productFields: z.array(z.object({ scope: z.enum(['product', 'variation']), field: z.string().regex(/^[a-z0-9_]{1,80}$/), multiple: z.boolean() }).strict()).max(500).default([]),
+  modules: z.array(z.enum(modules.moduleIds)).max(100).default([]),
 }).strict()
 const taxonomyTermsQuerySchema = z.object({
   shopUrl: shopUrlSchema.optional(),
@@ -145,7 +149,7 @@ function openDatabase(filename) {
     database.exec('PRAGMA busy_timeout = 5000; PRAGMA foreign_keys = ON; PRAGMA journal_mode = WAL; PRAGMA synchronous = FULL;')
     database.exec('BEGIN IMMEDIATE')
     const version = database.prepare('PRAGMA user_version').get().user_version
-    if (version > 11) throw new Error('Database schema is newer than this app.')
+    if (version > 14) throw new Error('Database schema is newer than this app.')
     if (version < 1) {
       database.exec(`
         CREATE TABLE shops (
@@ -386,6 +390,53 @@ function openDatabase(filename) {
         database.exec('ALTER TABLE product_taxonomies ADD COLUMN field TEXT')
       database.exec('PRAGMA user_version = 11;')
     }
+    if (version < 12) {
+      // Plugin modules detected per shop during the taxonomy import.
+      database.exec(`CREATE TABLE IF NOT EXISTS shop_modules (
+          shop_url TEXT NOT NULL,
+          module_id TEXT NOT NULL,
+          detected_at TEXT NOT NULL,
+          PRIMARY KEY(shop_url, module_id)
+        ) STRICT;
+        PRAGMA user_version = 12;`)
+    }
+    if (version < 13) {
+      // Shops imported before modules existed: detect modules from the stored taxonomies and fields,
+      // so they do not need a new import. Namespace-based detection follows with the next import.
+      const insertModule = database.prepare('INSERT OR IGNORE INTO shop_modules (shop_url, module_id, detected_at) VALUES (?, ?, ?)')
+      for (const { shopUrl } of database.prepare('SELECT DISTINCT shop_url AS shopUrl FROM taxonomies').all()) {
+        const detected = modules.detectModules({
+          namespaces: [],
+          taxonomies: database.prepare('SELECT taxonomy FROM taxonomies WHERE shop_url = ?').all(shopUrl).map((row) => row.taxonomy),
+          productFields: database.prepare('SELECT scope, field FROM product_term_fields WHERE shop_url = ?').all(shopUrl),
+        })
+        for (const id of detected) insertModule.run(shopUrl, id, new Date().toISOString())
+      }
+      database.exec('PRAGMA user_version = 13;')
+    }
+    if (version < 14) {
+      // Modules can be switched off per shop. Taxonomy labels keep their module-free form (base_label)
+      // and source, so module labels can be applied and removed without a new import.
+      database.exec(`CREATE TABLE IF NOT EXISTS module_settings (
+          shop_url TEXT NOT NULL,
+          module_id TEXT NOT NULL,
+          enabled INTEGER NOT NULL CHECK(enabled IN (0, 1)),
+          updated_at TEXT NOT NULL,
+          PRIMARY KEY(shop_url, module_id)
+        ) STRICT;`)
+      const columns = new Set(database.prepare('PRAGMA table_info(taxonomies)').all().map((column) => column.name))
+      if (!columns.has('base_label')) database.exec('ALTER TABLE taxonomies ADD COLUMN base_label TEXT')
+      if (!columns.has('label_source')) database.exec("ALTER TABLE taxonomies ADD COLUMN label_source TEXT NOT NULL DEFAULT 'wordpress'")
+      // Existing labels set by a module were generated names underneath.
+      const update = database.prepare('UPDATE taxonomies SET base_label = ?, label_source = ? WHERE shop_url = ? AND taxonomy = ?')
+      for (const row of database.prepare('SELECT shop_url AS shopUrl, taxonomy, kind, label FROM taxonomies WHERE base_label IS NULL').all()) {
+        const moduleLabel = modules.taxonomyLabel(modules.moduleIds, row.taxonomy)
+        if (row.kind === 'core') update.run(row.label, 'core', row.shopUrl, row.taxonomy)
+        else if (moduleLabel === row.label || row.label === humanize(row.taxonomy)) update.run(humanize(row.taxonomy), 'generated', row.shopUrl, row.taxonomy)
+        else update.run(row.label, 'wordpress', row.shopUrl, row.taxonomy)
+      }
+      database.exec('PRAGMA user_version = 14;')
+    }
     database.exec('COMMIT')
   } catch (error) {
     if (database.isTransaction) database.exec('ROLLBACK')
@@ -514,9 +565,29 @@ function openDatabase(filename) {
     }
   }
 
-  // Which taxonomy a writable term field belongs to: core fields by name, then what imported products
-  // show, then naming (delivery_time -> product_delivery_time, sale_price_label -> product_price_label).
+  function detectedModules(shopUrl) {
+    return database.prepare('SELECT module_id AS id FROM shop_modules WHERE shop_url = ?').all(shopUrl).map((row) => row.id)
+  }
+  function switchedOffModules(shopUrl) {
+    return database.prepare('SELECT module_id AS id FROM module_settings WHERE shop_url = ? AND enabled = 0').all(shopUrl).map((row) => row.id)
+  }
+  // Detected and not switched off; licensing is checked by the module registry.
+  function activeModuleIds(shopUrl) {
+    const off = switchedOffModules(shopUrl)
+    return detectedModules(shopUrl).filter((id) => !off.includes(id))
+  }
+  // Generated taxonomy names get the label of an active module; everything else keeps its base label.
+  function applyModuleLabels(shopUrl) {
+    const active = activeModuleIds(shopUrl)
+    const update = database.prepare('UPDATE taxonomies SET label = ? WHERE shop_url = ? AND taxonomy = ?')
+    for (const row of database.prepare('SELECT taxonomy, base_label AS baseLabel, label_source AS source FROM taxonomies WHERE shop_url = ?').all(shopUrl))
+      update.run((row.source === 'generated' ? modules.taxonomyLabel(active, row.taxonomy) : null) ?? row.baseLabel, shopUrl, row.taxonomy)
+  }
+
+  // Which taxonomy a writable term field belongs to: core fields by name, then active plugin modules,
+  // then what imported products show, then naming (delivery_time -> product_delivery_time).
   function termFieldTaxonomies(shopUrl) {
+    const detected = activeModuleIds(shopUrl)
     let fields = database.prepare('SELECT scope, field, multiple FROM product_term_fields WHERE shop_url = ?').all(shopUrl).map((row) => ({ ...row, multiple: row.multiple === 1 }))
     if (!fields.length) fields = ['categories', 'tags', 'brands'].map((field) => ({ scope: 'product', field, multiple: true }))
     const taxonomies = database.prepare("SELECT taxonomy, label, hierarchical FROM taxonomies WHERE shop_url = ? AND kind != 'attribute' AND available = 1").all(shopUrl)
@@ -527,6 +598,8 @@ function openDatabase(filename) {
     const tokens = (value) => value.replace(/^product_/, '').split(/[_-]+/).filter(Boolean)
     function resolve(field) {
       if (coreTermFields[field] && known.has(coreTermFields[field])) return coreTermFields[field]
+      const fromModule = modules.termField(detected, field)
+      if (fromModule && known.has(fromModule.taxonomy)) return fromModule.taxonomy
       if (observed.has(field)) return observed.get(field)
       if (known.has(`product_${field}`)) return `product_${field}`
       const fieldTokens = new Set(tokens(field))
@@ -534,11 +607,16 @@ function openDatabase(filename) {
       return candidates.length === 1 ? candidates[0].taxonomy : null
     }
     const resolved = fields.map((field) => ({ ...field, taxonomy: resolve(field.field) })).filter((field) => field.taxonomy && field.field !== 'shipping_class')
-    // Two fields can point to the same taxonomy (regular and sale price labels); name them apart.
-    const fieldLabels = { sale_price_label: 'Preishinweis Angebot', sale_price_regular_label: 'Preishinweis regulaer' }
+    // Two fields can point to the same taxonomy (e.g. regular and sale price labels); name them apart.
     return resolved.map((field) => {
+      const fromModule = modules.termField(detected, field.field)
       const shared = resolved.filter((other) => other.scope === field.scope && other.taxonomy === field.taxonomy).length > 1
-      return { ...field, label: fieldLabels[field.field] ?? (shared ? `${known.get(field.taxonomy).label} (${field.field})` : known.get(field.taxonomy).label), hierarchical: known.get(field.taxonomy).hierarchical === 1 }
+      return {
+        ...field,
+        label: fromModule?.taxonomy === field.taxonomy ? fromModule.label : shared ? `${known.get(field.taxonomy).label} (${field.field})` : known.get(field.taxonomy).label,
+        hierarchical: known.get(field.taxonomy).hierarchical === 1,
+        section: fromModule?.taxonomy === field.taxonomy ? fromModule.section : null,
+      }
     })
   }
 
@@ -744,16 +822,21 @@ function openDatabase(filename) {
         }
         database.prepare('DELETE FROM taxonomies WHERE shop_url = ?').run(parsed.shopUrl)
         database.prepare('DELETE FROM product_term_fields WHERE shop_url = ?').run(parsed.shopUrl)
+        // Keep the first detection time of modules that are still present.
+        database.prepare(`DELETE FROM shop_modules WHERE shop_url = ? AND module_id NOT IN (SELECT value FROM json_each(?))`).run(parsed.shopUrl, JSON.stringify(parsed.modules))
+        const insertModule = database.prepare('INSERT OR IGNORE INTO shop_modules (shop_url, module_id, detected_at) VALUES (?, ?, ?)')
+        for (const id of parsed.modules) insertModule.run(parsed.shopUrl, id, parsed.importedAt)
         const insertField = database.prepare('INSERT OR IGNORE INTO product_term_fields (shop_url, scope, field, multiple) VALUES (?, ?, ?, ?)')
         for (const field of parsed.productFields) insertField.run(parsed.shopUrl, field.scope, field.field, field.multiple ? 1 : 0)
-        const insertTaxonomy = database.prepare('INSERT INTO taxonomies (shop_url, taxonomy, kind, label, route, hierarchical, available, attribute, position, imported_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)')
+        const insertTaxonomy = database.prepare('INSERT INTO taxonomies (shop_url, taxonomy, kind, label, base_label, label_source, route, hierarchical, available, attribute, position, imported_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)')
         const upsertTerm = database.prepare(`INSERT INTO taxonomy_terms (shop_url, taxonomy, term_id, name, slug, payload, parent_id, product_count, menu_order) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
           ON CONFLICT(shop_url, taxonomy, term_id) DO UPDATE SET name = excluded.name, slug = excluded.slug, payload = excluded.payload, parent_id = excluded.parent_id, product_count = excluded.product_count, menu_order = excluded.menu_order`)
         for (const [position, entry] of parsed.taxonomies.entries()) {
-          insertTaxonomy.run(parsed.shopUrl, entry.taxonomy, entry.kind, entry.label, entry.route, entry.hierarchical ? 1 : 0, entry.available ? 1 : 0, entry.attribute ? JSON.stringify(entry.attribute) : null, position, parsed.importedAt)
+          insertTaxonomy.run(parsed.shopUrl, entry.taxonomy, entry.kind, entry.label, entry.label, entry.labelSource, entry.route, entry.hierarchical ? 1 : 0, entry.available ? 1 : 0, entry.attribute ? JSON.stringify(entry.attribute) : null, position, parsed.importedAt)
           for (const term of entry.terms)
             upsertTerm.run(parsed.shopUrl, entry.taxonomy, term.id, term.name, term.slug, JSON.stringify(term.payload), term.parentId, term.count, term.menuOrder)
         }
+        applyModuleLabels(parsed.shopUrl)
         database.exec('COMMIT')
       } catch (error) {
         if (database.isTransaction) database.exec('ROLLBACK')
@@ -908,6 +991,24 @@ function openDatabase(filename) {
       const parsed = z.object({ changeId: z.number().int().positive(), revision: z.number().int().nonnegative(), error: z.string().max(500) }).strict().parse(input)
       database.prepare("UPDATE taxonomy_changes SET state = 'failed', error = ? WHERE id = ? AND revision = ?").run(parsed.error, parsed.changeId, parsed.revision)
       return true
+    },
+    listModules(input = {}) {
+      const parsed = z.object({ shopUrl: shopUrlSchema.optional() }).strict().parse(input)
+      const shopUrl = taxonomyShop(parsed.shopUrl)
+      const rows = shopUrl ? database.prepare('SELECT module_id AS id, detected_at AS detectedAt FROM shop_modules WHERE shop_url = ?').all(shopUrl) : []
+      // Detection runs with imports; without one the shop has simply not been checked yet.
+      const checked = Boolean(shopUrl && database.prepare('SELECT 1 FROM taxonomies WHERE shop_url = ? LIMIT 1').get(shopUrl))
+      return { shopUrl, checked, modules: modules.describeModules(rows.map((row) => row.id), shopUrl ? switchedOffModules(shopUrl) : []).map((entry) => ({ ...entry, detectedAt: rows.find((row) => row.id === entry.id)?.detectedAt ?? null })) }
+    },
+    setModuleEnabled(input) {
+      const parsed = z.object({ shopUrl: shopUrlSchema, moduleId: z.enum(modules.moduleIds), enabled: z.boolean() }).strict().parse(input)
+      return transaction(() => {
+        if (!detectedModules(parsed.shopUrl).includes(parsed.moduleId)) throw new Error('Modul: Das Plugin wurde in diesem Shop nicht erkannt.')
+        database.prepare(`INSERT INTO module_settings (shop_url, module_id, enabled, updated_at) VALUES (?, ?, ?, ?)
+          ON CONFLICT(shop_url, module_id) DO UPDATE SET enabled = excluded.enabled, updated_at = excluded.updated_at`).run(parsed.shopUrl, parsed.moduleId, parsed.enabled ? 1 : 0, new Date().toISOString())
+        applyModuleLabels(parsed.shopUrl)
+        return this.listModules({ shopUrl: parsed.shopUrl }).modules.find((entry) => entry.id === parsed.moduleId)
+      })
     },
     productChangeCounts(input = {}) {
       const parsed = z.object({ shopUrl: shopUrlSchema.optional() }).strict().parse(input)

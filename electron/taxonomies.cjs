@@ -1,5 +1,6 @@
 const { z } = require('zod')
 const { WooError, normalizeUrl, wooRequest } = require('./shop.cjs')
+const modules = require('./modules/index.cjs')
 
 const pageSize = 100
 const maxPages = 200
@@ -7,11 +8,6 @@ const maxPageBytes = 4 * 1024 * 1024
 const formatError = 'Die Antwort entspricht nicht dem WooCommerce-Format.'
 
 const coreLabels = { product_cat: 'Kategorien', product_tag: 'Schlagwoerter', product_brand: 'Marken', product_shipping_class: 'Versandklassen' }
-// Display names only; discovery never depends on this list. Unknown taxonomies get the shop's WordPress label or a readable slug.
-const knownLabels = {
-  product_delivery_time: 'Lieferzeiten', product_unit: 'Einheiten', product_manufacturer: 'Hersteller', product_price_label: 'Preishinweise',
-  product_deposit_type: 'Pfandtypen', product_nutrient: 'Naehrwerte', product_allergen: 'Allergene',
-}
 // Used when the REST index is unavailable (e.g. blocked by a security plugin).
 const fallbackSources = [
   { taxonomy: 'product_cat', route: 'wc/v3/products/categories', hierarchical: true },
@@ -115,6 +111,14 @@ async function discoverWooTaxonomies(connection, fetcher) {
   return { productFields: productFields.length ? productFields : fallbackProductFields, sources: [...found.values()] }
 }
 
+// REST namespaces of all plugins (e.g. yoast/v1); used by modules to recognise plugins. Public, no keys.
+async function discoverNamespaces(connection, fetcher) {
+  try {
+    const { data } = await wooRequest(connection, '', { _fields: 'namespaces' }, fetcher, { maxBytes: 1024 * 1024 })
+    return z.object({ namespaces: z.array(z.string().max(200)).max(1000) }).parse(data).namespaces
+  } catch { return [] }
+}
+
 // Taxonomies registered with show_in_rest (themes, custom code) appear in wp/v2 even without a WooCommerce controller.
 async function discoverWordPressTaxonomies(connection, fetcher) {
   try {
@@ -155,7 +159,7 @@ function toTerm(term, hierarchical) {
 }
 
 async function importTaxonomies(connection, fetcher, onProgress = () => {}) {
-  const [{ sources: woo, productFields }, wordpress] = await Promise.all([discoverWooTaxonomies(connection, fetcher), discoverWordPressTaxonomies(connection, fetcher)])
+  const [{ sources: woo, productFields }, wordpress, namespaces] = await Promise.all([discoverWooTaxonomies(connection, fetcher), discoverWordPressTaxonomies(connection, fetcher), discoverNamespaces(connection, fetcher)])
   const labels = new Map(wordpress.map((entry) => [entry.slug, decodeEntities(entry.name)]))
   const sources = [...woo]
   for (const entry of wordpress) {
@@ -163,6 +167,7 @@ async function importTaxonomies(connection, fetcher, onProgress = () => {}) {
     if (entry.slug.startsWith('pa_') || sources.some((source) => source.taxonomy === entry.slug) || !routePath.safeParse(route).success) continue
     sources.push({ taxonomy: entry.slug, route, hierarchical: entry.hierarchical, args: ['per_page', 'page', 'orderby', 'order'], fields: `id,name,slug,description,count${entry.hierarchical ? ',parent' : ''}` })
   }
+  const detected = modules.detectModules({ namespaces, taxonomies: sources.map((source) => source.taxonomy), productFields })
   // Core taxonomies first, then plugin and custom taxonomies alphabetically.
   const core = Object.keys(coreLabels)
   sources.sort((a, b) => (core.includes(a.taxonomy) ? core.indexOf(a.taxonomy) : 99) - (core.includes(b.taxonomy) ? core.indexOf(b.taxonomy) : 99) || a.taxonomy.localeCompare(b.taxonomy))
@@ -172,7 +177,9 @@ async function importTaxonomies(connection, fetcher, onProgress = () => {}) {
   let total = sources.length + 1
   const progress = (label) => onProgress({ label, completed, total })
   for (const source of sources) {
-    const label = coreLabels[source.taxonomy] ?? labels.get(source.taxonomy) ?? knownLabels[source.taxonomy] ?? humanize(source.taxonomy)
+    // Label without plugin modules; the database applies labels of active modules on top of generated ones.
+    const labelSource = coreLabels[source.taxonomy] ? 'core' : labels.has(source.taxonomy) ? 'wordpress' : 'generated'
+    const label = coreLabels[source.taxonomy] ?? labels.get(source.taxonomy) ?? humanize(source.taxonomy)
     progress(label)
     let terms = []
     let available = true
@@ -184,7 +191,7 @@ async function importTaxonomies(connection, fetcher, onProgress = () => {}) {
     }
     if (available || !source.optional)
       taxonomies.push({
-        taxonomy: source.taxonomy, kind: core.includes(source.taxonomy) ? 'core' : 'custom', label, route: source.route,
+        taxonomy: source.taxonomy, kind: core.includes(source.taxonomy) ? 'core' : 'custom', label, labelSource, route: source.route,
         hierarchical: source.hierarchical, available, attribute: null, terms: terms.map((term) => toTerm(term, source.hierarchical)),
       })
     completed++
@@ -203,14 +210,14 @@ async function importTaxonomies(connection, fetcher, onProgress = () => {}) {
     const terms = await fetchTerms(connection, { route, args: ['per_page', 'page', 'orderby', 'order'], fields: 'id,name,slug,description,menu_order,count' }, fetcher)
     taxonomies.push({
       taxonomy: attribute.slug.startsWith('pa_') ? attribute.slug : `pa_${attribute.slug}`,
-      kind: 'attribute', label, route, hierarchical: false, available: true,
+      kind: 'attribute', label, labelSource: 'wordpress', route, hierarchical: false, available: true,
       attribute: { id: attribute.id, type: attribute.type, orderBy: attribute.order_by, hasArchives: attribute.has_archives },
       terms: terms.map((term) => toTerm(term, false)),
     })
     completed++
   }
   progress('Speichern')
-  return { shopUrl: normalizeUrl(connection.url), importedAt: new Date().toISOString(), taxonomies, productFields }
+  return { shopUrl: normalizeUrl(connection.url), importedAt: new Date().toISOString(), taxonomies, productFields, modules: detected }
 }
 
-module.exports = { decodeEntities, importTaxonomies, termSchema, toTerm }
+module.exports = { decodeEntities, humanize, importTaxonomies, termSchema, toTerm }

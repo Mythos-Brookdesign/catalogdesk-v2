@@ -20,7 +20,7 @@ export type LocalProduct = {
   remote: Record<string, unknown> | null
 }
 export type ProductChangeCounts = { pending: number; failed: number; conflict: number }
-export type ProductTermField = { scope: 'product' | 'variation'; field: string; multiple: boolean; taxonomy: string; label: string; hierarchical: boolean; terms: { id: number; name: string; path: string; depth: number }[] }
+export type ProductTermField = { scope: 'product' | 'variation'; field: string; multiple: boolean; taxonomy: string; label: string; hierarchical: boolean; section: string | null; terms: { id: number; name: string; path: string; depth: number }[] }
 export type ProductEditorOptions = { termFields: ProductTermField[]; shippingClasses: { slug: string; name: string }[] }
 export type ProductChange = { productId: number; values: Record<string, unknown>; terms: Record<string, number[] | number> }
 export type ProductSyncResult = { synced: number; failed: number; conflicts: number; offline: boolean; counts: ProductChangeCounts }
@@ -114,6 +114,7 @@ export type TaxonomyTermChange =
   | { taxonomy: string; operation: 'delete'; termId: number }
 export type TaxonomySyncResult = { synced: number; failed: number; offline: boolean; pendingChanges: number; failedChanges: number }
 export type TaxonomyTermOption = { id: number; path: string; depth: number }
+export type PluginModule = { id: string; name: string; description: string; detected: boolean; licensed: boolean; enabled: boolean; active: boolean; detectedAt: string | null }
 export type AuditCategory = 'auth' | 'users' | 'settings' | 'shop' | 'taxonomies' | 'sync' | 'catalog'
 export type AuditChange = { field: string; before: unknown; after: unknown }
 export type AuditEntry = {
@@ -165,6 +166,8 @@ declare global {
       syncTaxonomies: (retryFailed?: boolean) => Promise<UserResult<TaxonomySyncResult>>
       onTaxonomiesChanged: (listener: () => void) => () => void
       listAudit: (query: AuditQuery) => Promise<UserResult<AuditPage>>
+      listModules: () => Promise<UserResult<{ shopUrl: string | null; checked: boolean; modules: PluginModule[] }>>
+      setModuleEnabled: (moduleId: string, enabled: boolean) => Promise<UserResult<PluginModule>>
       onAuditAppended: (listener: () => void) => () => void
       onTaxonomyImportProgress: (listener: (progress: TaxonomyImportProgress) => void) => () => void
     }

@@ -75,6 +75,8 @@ contextBridge.exposeInMainWorld('catalogDesk', {
   syncTaxonomies: (retryFailed = false) => authorized('catalog:v2:taxonomies-sync', { retryFailed }),
   onTaxonomiesChanged: (listener) => { taxonomyChangeListeners.add(listener); return () => taxonomyChangeListeners.delete(listener) },
   listAudit: (query) => authorized('catalog:v2:audit-list', query),
+  listModules: () => authorized('catalog:v2:modules-list'),
+  setModuleEnabled: (moduleId, enabled) => authorized('catalog:v2:modules-set', { moduleId, enabled }),
   onAuditAppended: (listener) => { auditListeners.add(listener); return () => auditListeners.delete(listener) },
   onTaxonomyImportProgress: (listener) => { taxonomyProgressListeners.add(listener); return () => taxonomyProgressListeners.delete(listener) },
 })

@@ -13,7 +13,7 @@ A separate product-first Electron application. V1 remains untouched and its loca
 - `src/features/products`: product workspace UI and feature types, separate from CSV parsing.
 - `src/domain`: shared product invariants and future use cases.
 
-The V2 schema models WooCommerce products and variants explicitly. Germanized and plugin-specific data remain in the original JSON payload until an adapter declares those fields. No V1 data or credentials are copied into V2.
+The V2 schema models WooCommerce products and variants explicitly. Plugin-specific data remains in the original JSON payload unless a plugin module (see below) declares its meaning. No V1 data or credentials are copied into V2.
 
 On the first start, create the initial admin with first name, last name, email, username, and a password of at least 8 characters. Later starts require that local username and password.
 
@@ -72,6 +72,16 @@ Queued changes are synchronized in creation order every 30 seconds, when the net
 
 General Settings provides Light and Dark modes. Selection applies immediately to the whole app and is persisted as a shared local workspace setting in SQLite (schema v4). The login screen and native window background load the saved mode before displaying the workspace. Theme updates require the Settings permission; reading only the theme is permitted before login. A failed save restores the previous mode.
 
+## Plugin Modules
+
+The core works with any WooCommerce shop without knowing its plugins: taxonomies and writable term fields are discovered from the REST index, and unknown data stays untouched in the product payload. Plugin modules add what discovery cannot know: readable names, field meanings and editor sections.
+
+Modules live in `electron/modules/` and are plain declarations, registered in `electron/modules/index.cjs`. They ship with the app and are never loaded from outside. Each module defines `id`, `name`, `description`, `detect(context)` (context: REST namespaces, discovered taxonomies, writable product fields), and optionally `taxonomyLabels`, `termFields` (field -> taxonomy and label) and `editorSection`. Detection runs with every taxonomy import (also inside the product import); detected modules are stored per shop (`shop_modules`, schema v12) and listed under Shop Connection > Plugin modules. Appearing or disappearing modules are recorded in History. A module is **active** when it is detected in the shop, licensed (`isLicensed()` in the registry, the single place where booked modules will be checked; until licensing exists every module is licensed) and switched on. Users with the Shop Connection permission switch detected modules on or off per shop (`module_settings`, schema v14); the choice survives new imports, takes effect immediately and is recorded in History. Switching off keeps every field working with neutral labels and without the module's editor section. To make this possible, taxonomies keep their module-free label (`base_label`) and its source (core, WordPress or generated); module labels are applied on top of generated names only, so a shop's own WordPress labels always win.
+
+Precedence: core names, then the shop's own WordPress labels, then module labels, then a readable slug. For term fields: core fields, then module mappings, then relations seen on imported products, then naming rules.
+
+First module: **Germanized** (detected by its taxonomies): German names for delivery times, units, manufacturers, price labels, deposit types, nutrients and allergens; field meanings for `delivery_time`, `unit`, `manufacturer`, `sale_price_label` and `sale_price_regular_label`; its fields appear in a separate "Germanized" section of the product editor. Without the module, the same fields still work with neutral labels.
+
 ## Usage History (Audit Log)
 
 History lists who did what and when: logins (including failed attempts with the entered username) and logouts, the first admin setup, user changes, theme changes, shop connection save/test/remove, taxonomy imports, term create/edit/delete/discard, and every synchronization run (manual, before an import, or automatic in the background as "System"). Rejected actions are recorded as failures with their reason.
@@ -100,3 +110,5 @@ npm run dev
 ```
 
 The dev command starts Vite on `127.0.0.1:5179` and launches the sandboxed Electron shell. Build with `npm run build`; package with `npm run dist`.
+
+Tests: `npm test` runs the main-process unit tests (Vitest). `npm run test:e2e` builds the renderer and drives the Electron app with Playwright through the production `catalog://` protocol, so a running `npm run dev` does not interfere; on failure a screenshot `failure.png` is stored in `test-results`.

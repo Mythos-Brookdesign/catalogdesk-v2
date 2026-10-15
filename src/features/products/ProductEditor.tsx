@@ -135,12 +135,13 @@ export function ProductEditor({ product, options, busy, error, onCancel, onSave 
             {options.shippingClasses.map((entry) => <option key={entry.slug} value={entry.slug}>{entry.name}</option>)}
           </select></label>
         </section>
-        {termFields.length > 0 && <section className="product-editor-section" aria-label="Zuordnungen">
-          <h3>Zuordnungen</h3>
+        {/* Core term fields under "Zuordnungen"; fields of plugin modules in their own section (e.g. Germanized). */}
+        {[...new Set(termFields.map((field) => field.section))].sort((a, b) => (a === null ? -1 : b === null ? 1 : a.localeCompare(b))).map((section) => <section key={section ?? 'core'} className="product-editor-section" aria-label={section ?? 'Zuordnungen'}>
+          <h3>{section ?? 'Zuordnungen'}</h3>
           <div className="product-editor-terms">
-            {termFields.map((field) => <TermPicker key={field.field} field={field} selected={terms[field.field] ?? []} onChange={(ids) => setTerms({ ...terms, [field.field]: ids })} />)}
+            {termFields.filter((field) => field.section === section).map((field) => <TermPicker key={field.field} field={field} selected={terms[field.field] ?? []} onChange={(ids) => setTerms({ ...terms, [field.field]: ids })} />)}
           </div>
-        </section>}
+        </section>)}
       </fieldset>
       {error && <p className="auth-error" role="alert">{error}</p>}
       <footer><button className="button" type="button" disabled={busy} onClick={onCancel}>Abbrechen</button><button className="button primary" disabled={busy || (!variation && !values.name.trim())}>{busy ? <LoaderCircle className="spin" size={16} /> : <Save size={16} />}Speichern</button></footer>

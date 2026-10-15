@@ -172,6 +172,19 @@ app.whenReady().then(async () => {
   }
   // Sends queued term edits when the shop is reachable. Returns null when another shop action holds the lock.
   const operationLabels = { create: 'angelegt', update: 'geaendert', delete: 'geloescht' }
+  // Stores a taxonomy import and records plugin modules that appeared or disappeared with it.
+  async function storeTaxonomies(result, user) {
+    const before = (await databaseCall('listModules', { shopUrl: result.shopUrl })).modules.filter((entry) => entry.detected).map((entry) => entry.id)
+    const overview = await databaseCall('replaceTaxonomies', result)
+    const { modules } = await databaseCall('listModules', { shopUrl: result.shopUrl })
+    for (const entry of modules) {
+      const was = before.includes(entry.id)
+      if (entry.detected === was) continue
+      void audit(user, { category: 'shop', action: entry.detected ? 'shop.module_detected' : 'shop.module_removed', shopUrl: result.shopUrl, targetType: 'module', targetId: entry.id, targetLabel: entry.name,
+        summary: entry.detected ? `Modul ${entry.name} erkannt${entry.active ? ' und aktiviert' : ''}` : `Modul ${entry.name} nicht mehr erkannt`, details: { description: entry.description } })
+    }
+    return overview
+  }
   function auditSync(changes, user, shopUrl) {
     if (!changes.length) return
     const synced = changes.filter((change) => change.outcome === 'success').length
@@ -284,7 +297,7 @@ app.whenReady().then(async () => {
         if (!event.sender.isDestroyed()) event.sender.send('catalog:v2:taxonomies-progress', progress)
       })
       authorize(event, envelope, 'taxonomies')
-      const overview = await database.request('replaceTaxonomies', result)
+      const overview = await storeTaxonomies(result, user)
       const terms = result.taxonomies.reduce((sum, entry) => sum + entry.terms.length, 0)
       void audit(user, { category: 'taxonomies', action: 'taxonomies.import', shopUrl: result.shopUrl, targetType: 'shop', targetLabel: result.shopUrl,
         summary: `Taxonomien importiert: ${result.taxonomies.length} Taxonomien, ${terms} Begriffe`,
@@ -310,6 +323,30 @@ app.whenReady().then(async () => {
       }
     })
   }
+  ipcMain.handle('catalog:v2:modules-list', async (event, envelope) => {
+    try {
+      authorize(event, envelope, 'shop')
+      const shopUrl = (await shopStore.summary().catch(() => null))?.url
+      return { ok: true, value: await databaseCall('listModules', shopUrl ? { shopUrl } : {}) }
+    } catch (error) {
+      return { ok: false, error: /^(Sitzung|Fuer diese)/.test(error.message ?? '') ? error.message : 'Module konnten nicht geladen werden.' }
+    }
+  })
+  ipcMain.handle('catalog:v2:modules-set', async (event, envelope) => {
+    let user = null
+    try {
+      const authorized = authorize(event, envelope, 'shop')
+      user = authorized.user
+      const shopUrl = await currentShopUrl()
+      const value = await databaseCall('setModuleEnabled', { shopUrl, moduleId: authorized.payload?.moduleId, enabled: authorized.payload?.enabled })
+      void audit(user, { category: 'shop', action: value.enabled ? 'shop.module_enabled' : 'shop.module_disabled', shopUrl, targetType: 'module', targetId: value.id, targetLabel: value.name,
+        summary: `Modul ${value.name} ${value.enabled ? 'eingeschaltet' : 'ausgeschaltet'}`, details: { changes: [{ field: 'Modul', before: value.enabled ? 'Aus' : 'Ein', after: value.enabled ? 'Ein' : 'Aus' }] } })
+      return { ok: true, value }
+    } catch (error) {
+      const message = /^(Sitzung|Fuer diese|Modul|Keine Shopverbindung)/.test(error.message ?? '') ? error.message : 'Modul konnte nicht umgeschaltet werden.'
+      return { ok: false, error: message }
+    }
+  })
   ipcMain.handle('catalog:v2:audit-list', async (event, envelope) => {
     try {
       const { payload } = authorize(event, envelope, 'history')
@@ -386,7 +423,7 @@ app.whenReady().then(async () => {
       // Queued product edits go out first; edits that cannot be sent stay queued over the import.
       auditProductSync((await syncProductChanges(connection, databaseCall, shopFetch)).changes, user, connection.url)
       const taxonomies = await importTaxonomies(connection, shopFetch, (value) => progress({ step: 'taxonomies', label: `Taxonomien: ${value.label}`, completed: value.completed, total: value.total }))
-      await databaseCall('replaceTaxonomies', taxonomies)
+      await storeTaxonomies(taxonomies, user)
       const catalog = await importProducts(connection, shopFetch, progress)
       progress({ step: 'saving', label: 'Katalog wird gespeichert ...', completed: 1, total: 1 })
       authorize(event, envelope, 'products')

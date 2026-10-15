@@ -91,15 +91,25 @@ async function mockWooCommerce(application: ElectronApplication, key: string, se
   }, { key, secret })
 }
 
+let activePage: Page | undefined
+// eslint-disable-next-line no-empty-pattern -- Playwright requires a destructuring pattern for fixtures
+test.afterEach(async ({}, testInfo) => {
+  if (testInfo.status === testInfo.expectedStatus || !activePage || activePage.isClosed()) return
+  await activePage.screenshot({ path: testInfo.outputPath('failure.png') }).catch(() => {})
+  console.log('FAILURE dialogs:', await activePage.getByRole('dialog').count().catch(() => -1), 'alerts:', await activePage.getByRole('alert').allInnerTexts().catch(() => []), 'statuses:', await activePage.getByRole('status').allInnerTexts().catch(() => []))
+})
+
 async function launchApp(
   playwright: { _electron: { launch: (options: { args: string[]; env: NodeJS.ProcessEnv }) => Promise<ElectronApplication> } },
   userData: string,
 ) {
   const application = await playwright._electron.launch({
-    args: ['.', '--dev'],
+    // Production renderer (catalog:// protocol from dist), independent of a running dev server.
+    args: ['.'],
     env: { ...process.env, ELECTRON_RUN_AS_NODE: '', CATALOGDESK_V2_TEST_USER_DATA: userData },
   })
-  return { application, page: await application.firstWindow() }
+  activePage = await application.firstWindow()
+  return { application, page: activePage }
 }
 
 async function fillLogin(page: Page) {
@@ -264,13 +274,16 @@ test('creates the first admin before showing the app and requires login on the n
     await page.getByLabel('Produkttyp').selectOption('variation')
     await expect(productRows).toHaveCount(2)
     await page.getByLabel('Produkttyp').selectOption('all')
+    // The list reloads asynchronously; wait for the unfiltered list before picking a row.
+    await expect(productRows).toHaveCount(4)
 
     await productRows.filter({ hasText: 'HOOD' }).first().click()
     await inspector.getByRole('button', { name: 'Bearbeiten', exact: true }).click()
     let editor = page.getByRole('dialog')
     await editor.getByLabel('Name', { exact: true }).fill('Hoodie Classic')
     await editor.getByRole('group', { name: /Kategorien/ }).getByLabel('Shirts').check()
-    await editor.getByLabel('Lieferzeiten').selectOption({ label: '— keine —' })
+    await expect(editor.getByRole('region', { name: 'Germanized' })).toBeVisible()
+    await editor.getByRole('region', { name: 'Germanized' }).getByLabel('Lieferzeit').selectOption({ label: '— keine —' })
     await page.screenshot({ path: testInfo.outputPath('product-editor.png') })
     await editor.getByRole('button', { name: 'Speichern', exact: true }).click()
     await expect(page.getByRole('status').filter({ hasText: 'Im Shop gespeichert' })).toContainText('„Hoodie Classic“ wurde uebertragen.')
@@ -381,6 +394,25 @@ test('creates the first admin before showing the app and requires login on the n
     await expect(page.getByRole('button', { name: 'Bearbeiten: grace' })).toHaveCount(0)
     await page.getByRole('button', { name: 'Shopverbindung', exact: true }).click()
     await expect(page.getByLabel('Shopadresse (HTTPS)')).toHaveValue('https://shop.example/')
+    const moduleList = page.getByRole('region', { name: 'Plugin-Module' })
+    await expect(moduleList.getByRole('listitem').filter({ hasText: 'Germanized' })).toContainText('Aktiv')
+    const germanizedSwitch = moduleList.getByRole('switch', { name: 'Modul Germanized' })
+    await expect(germanizedSwitch).toHaveAttribute('aria-checked', 'true')
+    await germanizedSwitch.click()
+    await expect(page.getByRole('status').filter({ hasText: 'Modul Germanized ausgeschaltet' })).toBeVisible()
+    await expect(moduleList.getByRole('listitem').filter({ hasText: 'Germanized' })).toContainText('Ausgeschaltet')
+    await expect(germanizedSwitch).toHaveAttribute('aria-checked', 'false')
+    await page.waitForTimeout(400)
+    await page.screenshot({ path: testInfo.outputPath('shop-modules.png') })
+    const taxonomyNavigation = page.getByRole('navigation', { name: 'Taxonomien' })
+    await page.getByRole('button', { name: 'Taxonomien', exact: true }).click()
+    await expect(taxonomyNavigation.getByRole('button', { name: /Delivery time/ })).toBeVisible()
+    await page.getByRole('button', { name: 'Shopverbindung', exact: true }).click()
+    await moduleList.getByRole('switch', { name: 'Modul Germanized' }).click()
+    await expect(moduleList.getByRole('listitem').filter({ hasText: 'Germanized' })).toContainText('Aktiv')
+    await page.getByRole('button', { name: 'Taxonomien', exact: true }).click()
+    await expect(taxonomyNavigation.getByRole('button', { name: /Lieferzeiten/ })).toBeVisible()
+    await page.getByRole('button', { name: 'Shopverbindung', exact: true }).click()
     await page.getByRole('button', { name: 'Shopverbindung entfernen', exact: true }).click()
     await page.getByRole('alertdialog').getByRole('button', { name: 'Verbindung endgueltig entfernen' }).click()
     await expect(page.getByRole('status').filter({ hasText: 'Shopverbindung entfernt' })).toBeVisible()
@@ -389,7 +421,7 @@ test('creates the first admin before showing the app and requires login on the n
     await page.getByRole('button', { name: 'Historie', exact: true }).click()
     const history = page.locator('.history-table')
     for (const summary of ['Shopverbindung entfernt', 'Benutzer „Grace Mitarbeiter“ geloescht', 'Benutzer „Grace Hopper“ angelegt', 'Begriff „Hosen“ in Kategorien angelegt',
-      'Begriff „T-Shirts“ in Kategorien geaendert', '2 Taxonomie-Aenderungen an den Shop uebertragen', 'Taxonomien importiert: 7 Taxonomien, 8 Begriffe', 'Produkte importiert: 2 Produkte, 2 Varianten', 'Produkt „Hoodie Classic“ geaendert', 'Produkt „Socken“ geaendert', 'Konflikt bei „Socken“ geloest', 'Shopverbindung gespeichert', 'Farbschema auf Dunkel geaendert', 'Ersten Administrator eingerichtet'])
+      'Begriff „T-Shirts“ in Kategorien geaendert', '2 Taxonomie-Aenderungen an den Shop uebertragen', 'Taxonomien importiert: 7 Taxonomien, 8 Begriffe', 'Produkte importiert: 2 Produkte, 2 Varianten', 'Modul Germanized erkannt und aktiviert', 'Modul Germanized ausgeschaltet', 'Modul Germanized eingeschaltet', 'Produkt „Hoodie Classic“ geaendert', 'Produkt „Socken“ geaendert', 'Konflikt bei „Socken“ geloest', 'Shopverbindung gespeichert', 'Farbschema auf Dunkel geaendert', 'Ersten Administrator eingerichtet'])
       await expect(history.getByRole('cell', { name: summary, exact: true }).first()).toBeVisible()
     await history.getByRole('button', { name: 'Details: Benutzer „Grace Mitarbeiter“ geaendert' }).click()
     const changeRow = history.locator('.history-changes tr').filter({ hasText: 'Name' }).first()
