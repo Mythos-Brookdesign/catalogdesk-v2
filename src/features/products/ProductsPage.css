@@ -1,0 +1,35 @@
+.products-page { min-width: 0; padding: 28px 32px 20px; display: flex; flex-direction: column; gap: 20px; }
+.products-heading { display: flex; align-items: center; justify-content: space-between; gap: 20px; }
+.products-heading h1 { margin: 3px 0 4px; font: 600 26px/1.15 'Manrope Variable', sans-serif; color: var(--ink); }
+.products-heading p { color: var(--muted); font-size: 12px; }
+.eyebrow { color: var(--muted); font-size: 9px; font-weight: 700; letter-spacing: .08em; }
+.products-toolbar { display: flex; align-items: center; gap: 12px; }
+.search-box, .type-filter { min-height: 38px; display: flex; align-items: center; gap: 9px; border: 1px solid var(--line); border-radius: 5px; padding: 0 11px; background: var(--surface); color: var(--muted); }
+.search-box { flex: 1; max-width: 500px; }
+.search-box input, .type-filter select { border: 0; outline: 0; background: transparent; color: var(--ink); font: inherit; font-size: 12px; min-width: 0; }
+.search-box input { flex: 1; }
+.type-filter select { appearance: none; cursor: pointer; }
+.products-table-wrap { min-height: 300px; flex: 1; border: 1px solid var(--line); border-radius: 5px; background: var(--surface); overflow: auto; }
+.products-table-head, .product-row { display: grid; grid-template-columns: minmax(220px, 1fr) minmax(100px, .42fr) minmax(110px, .3fr) 100px; align-items: center; gap: 16px; padding: 0 16px; }
+.products-table-head { position: sticky; top: 0; z-index: 1; height: 36px; background: var(--surface-alt); color: var(--muted); font-size: 9px; font-weight: 700; text-transform: uppercase; }
+.products-list { display: grid; }
+.product-row { min-height: 52px; border: 0; border-bottom: 1px solid var(--line); background: transparent; text-align: left; color: var(--ink); font: inherit; cursor: pointer; }
+.product-row:hover, .product-row.selected { background: var(--surface-hover); }
+.product-name { display: flex; align-items: center; gap: 10px; min-width: 0; font-size: 12px; }
+.product-name svg { color: var(--accent); flex: 0 0 auto; }
+.product-name strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 550; }
+.product-sku, .product-type { color: var(--muted); font: 11px/1.4 'IBM Plex Mono', monospace; }
+.sync-state { justify-self: start; border-radius: 3px; padding: 4px 6px; font-size: 9px; }
+.sync-state.clean { color: var(--green); background: var(--green-soft); }
+.sync-state.draft { color: var(--amber); background: var(--amber-soft); }
+.sync-state.conflict { color: var(--red); background: var(--red-soft); }
+.products-empty { min-height: 260px; display: grid; justify-items: center; align-content: center; gap: 10px; padding: 30px; text-align: center; }
+.products-empty svg { color: var(--accent); }
+.products-empty h2 { margin: 0; color: var(--ink); font-size: 16px; }
+.products-empty p { max-width: 430px; color: var(--muted); font-size: 12px; line-height: 1.6; }
+.workspace-error { display: flex; gap: 8px; align-items: center; color: var(--red); font-size: 12px; }
+.product-inspector { display: grid; gap: 6px; padding: 14px 0; border-top: 1px solid var(--line); color: var(--muted); font-size: 11px; }
+.product-inspector strong { color: var(--ink); font-size: 14px; }
+.product-inspector code { width: fit-content; color: var(--muted); }
+.products-footer { display: flex; justify-content: space-between; gap: 12px; padding-top: 12px; border-top: 1px solid var(--line); color: var(--muted); font-size: 10px; }
+@media (max-width: 720px) { .products-page { padding: 20px 16px; } .products-table-head, .product-row { grid-template-columns: minmax(160px, 1fr) minmax(80px, .5fr) 75px; } .products-table-head > :last-child, .product-row > :last-child { display: none; } .products-heading { align-items: flex-start; flex-direction: column; } }
