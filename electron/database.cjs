@@ -106,8 +106,11 @@ function openDatabase(filename) {
     workspaceSummary() {
       const shops = database.prepare('SELECT COUNT(*) AS count FROM shops').get().count
       const counts = database.prepare('SELECT type, COUNT(*) AS count FROM products GROUP BY type').all()
+      const latestShop = database.prepare('SELECT shop_url AS shopUrl, imported_at AS importedAt FROM shops ORDER BY imported_at DESC LIMIT 1').get() ?? null
       return {
         shopCount: shops,
+        latestShopUrl: latestShop?.shopUrl ?? null,
+        latestImportedAt: latestShop?.importedAt ?? null,
         products: counts.reduce((total, entry) => total + entry.count, 0),
         simple: counts.find((entry) => entry.type === 'simple')?.count ?? 0,
         variable: counts.find((entry) => entry.type === 'variable')?.count ?? 0,

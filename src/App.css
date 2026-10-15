@@ -47,6 +47,7 @@ h1, h2, h3 { font-family: 'Manrope Variable', sans-serif; }
 .app-shell { min-height: 100vh; display: grid; grid-template-columns: 218px minmax(0, 1fr); }
 .app-sidebar { position: sticky; top: 0; height: 100vh; display: flex; flex-direction: column; padding: 22px 14px 14px; background: #202a24; color: #e7eee9; }
 .app-brand { display: flex; align-items: center; gap: 10px; padding: 0 7px 28px; }
+.app-brand-button { width: 100%; border: 0; background: transparent; color: inherit; text-align: left; cursor: pointer; }
 .brand-mark { display: grid; place-items: center; width: 32px; height: 32px; border-radius: 6px; color: #fff; background: #197456; font: 700 18px 'Manrope Variable', sans-serif; }
 .app-brand strong, .app-brand small, .sidebar-status strong, .sidebar-status small { display: block; }
 .app-brand strong { font: 600 14px 'Manrope Variable', sans-serif; }

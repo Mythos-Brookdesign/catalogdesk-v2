@@ -38,7 +38,6 @@ export function ProductsPage({ desktop }: { desktop?: DesktopApi }) {
           <h1>Produkte</h1>
           <p>{summary ? `${summary.products.toLocaleString('de-DE')} Produkte · ${summary.variable} variable · ${summary.variations} Varianten` : 'SQLite-Arbeitsbereich'}</p>
         </div>
-        <button className="button primary" type="button" disabled title="Shopimport kommt im nächsten Implementierungsschritt">Shop verbinden</button>
       </header>
 
       <section className="products-toolbar" aria-label="Produktfilter">

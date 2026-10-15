@@ -14,6 +14,8 @@ export type LocalProduct = {
 
 export type WorkspaceSummary = {
   shopCount: number
+  latestShopUrl: string | null
+  latestImportedAt: string | null
   products: number
   simple: number
   variable: number

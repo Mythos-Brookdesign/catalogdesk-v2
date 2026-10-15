@@ -14,7 +14,7 @@ it('opens the new product-first schema with an empty local workspace', () => {
   paths.push(directory)
   const database = databaseModule.openDatabase(path.join(directory, 'catalogdesk-v2.sqlite'))
   try {
-    expect(database.workspaceSummary()).toEqual({ shopCount: 0, products: 0, simple: 0, variable: 0, variations: 0 })
+    expect(database.workspaceSummary()).toEqual({ shopCount: 0, latestShopUrl: null, latestImportedAt: null, products: 0, simple: 0, variable: 0, variations: 0 })
     expect(database.listProducts()).toEqual({ products: [], total: 0, page: 0, pageSize: 50 })
   } finally {
     database.close()
@@ -69,6 +69,8 @@ it('stores product families, variations and taxonomy relations atomically', () =
 
     expect(database.workspaceSummary()).toEqual({
       shopCount: 1,
+      latestShopUrl: 'https://shop.example/',
+      latestImportedAt: expect.any(String),
       products: 3,
       simple: 0,
       variable: 1,

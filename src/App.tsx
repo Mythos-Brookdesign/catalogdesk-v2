@@ -5,6 +5,8 @@ import {
   CircleHelp,
   Database,
   GitCompareArrows,
+  LayoutDashboard,
+  PlugZap,
   Settings,
   ShoppingBag,
   Tags,
@@ -13,23 +15,34 @@ import {
 } from 'lucide-react'
 import './App.css'
 import { ProductsPage } from './features/products/ProductsPage'
+import { DashboardPage } from './features/dashboard/DashboardPage'
 
 function App() {
   const desktop = window.catalogDesk
-  const [activeSection, setActiveSection] = useState('products')
+  const [activeSection, setActiveSection] = useState('dashboard')
 
   return (
     <div className="app-shell">
       <aside className="app-sidebar" aria-label="Hauptnavigation">
-        <div className="app-brand">
+        <button
+          className="app-brand app-brand-button"
+          onClick={() => setActiveSection('dashboard')}
+          title="Dashboard öffnen"
+        >
           <span className="brand-mark">C</span>
           <span>
             <strong>CatalogDesk</strong>
             <small>PRODUCT WORKSPACE</small>
           </span>
-        </div>
+        </button>
         <div className="sidebar-caption">ARBEITSBEREICH</div>
         <nav className="app-nav">
+          <button
+            className={activeSection === 'dashboard' ? 'active' : ''}
+            onClick={() => setActiveSection('dashboard')}
+          >
+            <LayoutDashboard size={17} />Dashboard
+          </button>
           <button
             className={activeSection === 'products' ? 'active' : ''}
             onClick={() => setActiveSection('products')}
@@ -51,6 +64,9 @@ function App() {
           <button disabled title="Benutzerverwaltung folgt mit dem V2-Rollenmodell">
             <UserRound size={17} />Benutzer
           </button>
+          <button disabled title="Shopverbindung folgt als nächster V2-Schritt">
+            <PlugZap size={17} />Shopverbindung
+          </button>
           <button disabled title="Taxonomiepflege folgt im Produktbereich">
             <Tags size={17} />Taxonomien
           </button>
@@ -67,13 +83,19 @@ function App() {
       <div className="app-main">
         <header className="app-topbar">
           <div className="breadcrumb">
-            <span>CatalogDesk</span><ChevronDown size={13} /><strong>Produkte</strong>
+            <span>CatalogDesk</span><ChevronDown size={13} /><strong>{activeSection === 'dashboard' ? 'Dashboard' : 'Produkte'}</strong>
           </div>
           <div className="topbar-tools">
             <span className="connection-state"><span className="status-dot" />Offline bereit</span>
             <button className="icon-button" aria-label="Hilfe" title="Hilfe"><CircleHelp size={17} /></button>
           </div>
         </header>
+        {activeSection === 'dashboard' && (
+          <DashboardPage
+            desktop={desktop}
+            onOpenProducts={() => setActiveSection('products')}
+          />
+        )}
         {activeSection === 'products' && <ProductsPage desktop={desktop} />}
       </div>
     </div>
