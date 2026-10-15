@@ -8,6 +8,7 @@ import {
   Settings,
   ShoppingBag,
   Tags,
+  UserRound,
   UsersRound,
 } from 'lucide-react'
 import './App.css'
@@ -46,6 +47,9 @@ function App() {
         <nav className="app-nav">
           <button disabled title="Allgemeine Einstellungen folgen als eigener Bereich">
             <Settings size={17} />Einstellungen
+          </button>
+          <button disabled title="Benutzerverwaltung folgt mit dem V2-Rollenmodell">
+            <UserRound size={17} />Benutzer
           </button>
           <button disabled title="Taxonomiepflege folgt im Produktbereich">
             <Tags size={17} />Taxonomien
