@@ -222,3 +222,32 @@ it('replaces imported taxonomies, keeps tree order and removes vanished terms wi
     database.close()
   }
 })
+
+it('keeps an append-only usage history with filters', () => {
+  const directory = mkdtempSync(path.join(os.tmpdir(), 'catalogdesk-v2-audit-'))
+  paths.push(directory)
+  const filename = path.join(directory, 'catalogdesk-v2.sqlite')
+  const database = databaseModule.openDatabase(filename)
+  const ada = { userId: '00000000-0000-4000-8000-000000000001', username: 'ada', userName: 'Ada Lovelace' }
+  try {
+    database.appendAudit({ ...ada, category: 'auth', action: 'auth.login', summary: 'Angemeldet' })
+    database.appendAudit({ ...ada, category: 'taxonomies', action: 'taxonomies.term_update', summary: 'Begriff „T-Shirts“ in Kategorien geaendert', targetLabel: 'T-Shirts', details: { changes: [{ field: 'Name', before: 'Shirts', after: 'T-Shirts' }] } })
+    database.appendAudit({ category: 'sync', action: 'sync.taxonomies', summary: '1 Aenderung uebertragen', source: 'system', outcome: 'failure' })
+    expect(() => database.appendAudit({ category: 'auth', action: 'invalid action', summary: 'x' })).toThrow()
+
+    const all = database.listAudit()
+    expect(all.total).toBe(3)
+    expect(all.entries[0]).toMatchObject({ category: 'sync', source: 'system', userId: null })
+    expect(all.users).toEqual([{ id: ada.userId, name: 'Ada Lovelace', username: 'ada' }])
+    expect(database.listAudit({ query: 'Shirts' }).entries[0].details.changes[0]).toEqual({ field: 'Name', before: 'Shirts', after: 'T-Shirts' })
+    expect(database.listAudit({ category: 'auth' }).total).toBe(1)
+    expect(database.listAudit({ userId: 'system' }).total).toBe(1)
+    expect(database.listAudit({ outcome: 'failure' }).total).toBe(1)
+    expect(database.listAudit({ to: '2000-01-01T00:00:00.000Z' }).total).toBe(0)
+  } finally { database.close() }
+  const raw = new DatabaseSync(filename)
+  try {
+    expect(() => raw.exec("UPDATE audit_log SET summary = 'manipuliert'")).toThrow('append-only')
+    expect(() => raw.exec('DELETE FROM audit_log')).toThrow('append-only')
+  } finally { raw.close() }
+})

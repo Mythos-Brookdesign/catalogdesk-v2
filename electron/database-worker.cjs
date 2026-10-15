@@ -33,6 +33,8 @@ const operations = new Set([
   'pendingTaxonomyChanges',
   'completeTaxonomyChange',
   'failTaxonomyChange',
+  'appendAudit',
+  'listAudit',
   'close',
 ])
 parentPort.on('message', ({ id, operation, payload }) => {

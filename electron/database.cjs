@@ -80,6 +80,32 @@ const syncedTermSchema = z.object({
   id: z.number().int().positive(), name: z.string().max(1000), slug: z.string().max(1000),
   parentId: z.number().int().nonnegative(), count: z.number().int().nonnegative(), menuOrder: z.number().int(), payload: z.record(z.string(), z.unknown()),
 }).strict()
+const auditCategories = ['auth', 'users', 'settings', 'shop', 'taxonomies', 'sync', 'catalog']
+const auditEntrySchema = z.object({
+  category: z.enum(auditCategories),
+  action: z.string().regex(/^[a-z]+(\.[a-z_]+)+$/).max(80),
+  summary: z.string().min(1).max(500),
+  outcome: z.enum(['success', 'failure']).default('success'),
+  source: z.enum(['user', 'system']).default('user'),
+  userId: z.string().uuid().nullable().default(null),
+  username: z.string().max(64).nullable().default(null),
+  userName: z.string().max(200).nullable().default(null),
+  targetType: z.string().max(80).nullable().default(null),
+  targetId: z.string().max(200).nullable().default(null),
+  targetLabel: z.string().max(500).nullable().default(null),
+  shopUrl: z.string().max(2048).nullable().default(null),
+  details: z.record(z.string(), z.unknown()).nullable().default(null),
+}).strict()
+const auditQuerySchema = z.object({
+  query: z.string().trim().max(200).default(''),
+  category: z.enum(auditCategories).optional(),
+  userId: z.string().max(64).optional(),
+  outcome: z.enum(['success', 'failure']).optional(),
+  from: z.string().datetime().optional(),
+  to: z.string().datetime().optional(),
+  page: z.number().int().min(0).max(1_000_000).default(0),
+  pageSize: z.number().int().min(1).max(200).default(100),
+}).strict()
 const usernameSchema = z.string().trim().min(3).max(32).regex(/^[A-Za-z0-9._-]+$/)
 const newAdminSchema = z.object({
   firstName: z.string().trim().min(1).max(80),
@@ -89,7 +115,7 @@ const newAdminSchema = z.object({
   salt: z.string().regex(/^[a-f0-9]{32}$/),
   passwordHash: z.string().regex(/^[a-f0-9]{128}$/),
 }).strict()
-const menuPermissions = z.array(z.enum(['dashboard', 'products', 'orders', 'customers', 'settings', 'users', 'shop', 'taxonomies', 'sync'])).max(9)
+const menuPermissions = z.array(z.enum(['dashboard', 'products', 'orders', 'customers', 'settings', 'users', 'shop', 'taxonomies', 'sync', 'history'])).max(10)
 const managedUserSchema = newAdminSchema.omit({ salt: true, passwordHash: true }).extend({
   id: z.string().uuid().optional(),
   role: z.enum(['admin', 'employee']),
@@ -105,7 +131,7 @@ function openDatabase(filename) {
     database.exec('PRAGMA busy_timeout = 5000; PRAGMA foreign_keys = ON; PRAGMA journal_mode = WAL; PRAGMA synchronous = FULL;')
     database.exec('BEGIN IMMEDIATE')
     const version = database.prepare('PRAGMA user_version').get().user_version
-    if (version > 8) throw new Error('Database schema is newer than this app.')
+    if (version > 9) throw new Error('Database schema is newer than this app.')
     if (version < 1) {
       database.exec(`
         CREATE TABLE shops (
@@ -281,6 +307,32 @@ function openDatabase(filename) {
         ) STRICT;
         PRAGMA user_version = 8;`)
     }
+    if (version < 9) {
+      // Append-only usage history. Names are stored as snapshots so entries stay readable after users are deleted.
+      database.exec(`CREATE TABLE IF NOT EXISTS audit_log (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          occurred_at TEXT NOT NULL,
+          category TEXT NOT NULL,
+          action TEXT NOT NULL,
+          summary TEXT NOT NULL,
+          outcome TEXT NOT NULL CHECK(outcome IN ('success', 'failure')),
+          source TEXT NOT NULL CHECK(source IN ('user', 'system')),
+          user_id TEXT,
+          username TEXT,
+          user_name TEXT,
+          target_type TEXT,
+          target_id TEXT,
+          target_label TEXT,
+          shop_url TEXT,
+          details TEXT CHECK(details IS NULL OR json_valid(details))
+        ) STRICT;
+        CREATE INDEX IF NOT EXISTS audit_log_time ON audit_log(occurred_at);
+        CREATE INDEX IF NOT EXISTS audit_log_category ON audit_log(category, occurred_at);
+        CREATE INDEX IF NOT EXISTS audit_log_user ON audit_log(user_id, occurred_at);
+        CREATE TRIGGER IF NOT EXISTS audit_log_no_update BEFORE UPDATE ON audit_log BEGIN SELECT RAISE(ABORT, 'audit log is append-only'); END;
+        CREATE TRIGGER IF NOT EXISTS audit_log_no_delete BEFORE DELETE ON audit_log BEGIN SELECT RAISE(ABORT, 'audit log is append-only'); END;
+        PRAGMA user_version = 9;`)
+    }
     database.exec('COMMIT')
   } catch (error) {
     if (database.isTransaction) database.exec('ROLLBACK')
@@ -329,7 +381,7 @@ function openDatabase(filename) {
   }
 
   function editableTaxonomy(shopUrl, taxonomy) {
-    const entry = database.prepare('SELECT hierarchical, available, route FROM taxonomies WHERE shop_url = ? AND taxonomy = ?').get(shopUrl, taxonomy)
+    const entry = database.prepare('SELECT label, hierarchical, available, route FROM taxonomies WHERE shop_url = ? AND taxonomy = ?').get(shopUrl, taxonomy)
     if (!entry) throw new Error('Taxonomie wurde nicht gefunden. Bitte Taxonomien neu importieren.')
     // Only WooCommerce routes accept the API keys for writes; wp/v2 would need a WordPress login.
     if (!entry.available || !entry.route.startsWith('wc/v3/')) throw new Error('Diese Taxonomie kann in CatalogDesk nur gelesen werden.')
@@ -604,11 +656,14 @@ function openDatabase(filename) {
       return transaction(() => {
         const { shopUrl, taxonomy, operation, termId } = parsed
         const entry = editableTaxonomy(shopUrl, taxonomy)
-        const terms = new Map(database.prepare(`WITH ${mergedTerms} SELECT term_id AS id, name, slug, parent_id AS parentId, state FROM merged`).all(shopUrl, taxonomy).map((term) => [term.id, term]))
+        const terms = new Map(database.prepare(`WITH ${mergedTerms} SELECT term_id AS id, name, slug, parent_id AS parentId, description, state FROM merged`).all(shopUrl, taxonomy).map((term) => [term.id, term]))
         const now = new Date().toISOString()
         const term = termId === undefined ? null : terms.get(termId)
         if (operation !== 'create' && (!term || term.state === 'delete')) throw new Error('Begriff wurde nicht gefunden.')
         const existing = term ? database.prepare('SELECT id, operation FROM taxonomy_changes WHERE shop_url = ? AND taxonomy = ? AND term_ref = ?').get(shopUrl, taxonomy, termId) : null
+        // Returned for the usage history: the term as the user saw it before and after the edit.
+        const snapshot = (value) => value && { name: value.name, slug: value.slug, parent: value.parentId ?? value.parent, parentName: terms.get(value.parentId ?? value.parent)?.name ?? null, description: value.description ?? '' }
+        const audit = (result, after = null) => ({ ...result, taxonomyLabel: entry.label, before: snapshot(term), after: snapshot(after) })
 
         if (operation === 'delete') {
           if (termId < 0) {
@@ -619,7 +674,7 @@ function openDatabase(filename) {
           } else {
             database.prepare("INSERT INTO taxonomy_changes (shop_url, taxonomy, term_ref, operation, payload, created_at, updated_at) VALUES (?, ?, ?, 'delete', '{}', ?, ?)").run(shopUrl, taxonomy, termId, now, now)
           }
-          return { termId }
+          return audit({ termId })
         }
 
         if (!parsed.fields) throw new Error('Begriff: Name fehlt.')
@@ -639,21 +694,24 @@ function openDatabase(filename) {
         if (operation === 'create') {
           const { lastInsertRowid } = database.prepare("INSERT INTO taxonomy_changes (shop_url, taxonomy, term_ref, operation, payload, created_at, updated_at) VALUES (?, ?, 0, 'create', ?, ?, ?)").run(shopUrl, taxonomy, payload, now, now)
           database.prepare('UPDATE taxonomy_changes SET term_ref = ? WHERE id = ?').run(-Number(lastInsertRowid), lastInsertRowid)
-          return { termId: -Number(lastInsertRowid) }
+          return audit({ termId: -Number(lastInsertRowid) }, fields)
         }
         if (existing) database.prepare("UPDATE taxonomy_changes SET payload = ?, state = 'pending', error = NULL, revision = revision + 1, updated_at = ? WHERE id = ?").run(payload, now, existing.id)
         else database.prepare("INSERT INTO taxonomy_changes (shop_url, taxonomy, term_ref, operation, payload, created_at, updated_at) VALUES (?, ?, ?, 'update', ?, ?, ?)").run(shopUrl, taxonomy, termId, payload, now, now)
-        return { termId }
+        return audit({ termId }, fields)
       })
     },
     discardTaxonomyChange(input) {
       const parsed = termRefSchema.parse(input)
       return transaction(() => {
-        const change = database.prepare('SELECT id, operation, payload FROM taxonomy_changes WHERE shop_url = ? AND taxonomy = ? AND term_ref = ?').get(parsed.shopUrl, parsed.taxonomy, parsed.termId)
+        const change = database.prepare(`SELECT c.id, c.operation, c.payload, coalesce(json_extract(c.payload, '$.name'), tt.name) AS name, t.label AS taxonomyLabel
+          FROM taxonomy_changes c LEFT JOIN taxonomy_terms tt ON tt.shop_url = c.shop_url AND tt.taxonomy = c.taxonomy AND tt.term_id = c.term_ref
+          LEFT JOIN taxonomies t ON t.shop_url = c.shop_url AND t.taxonomy = c.taxonomy
+          WHERE c.shop_url = ? AND c.taxonomy = ? AND c.term_ref = ?`).get(parsed.shopUrl, parsed.taxonomy, parsed.termId)
         if (!change) throw new Error('Aenderung wurde nicht gefunden.')
         if (change.operation === 'create') reparentQueued(parsed.shopUrl, parsed.taxonomy, parsed.termId, JSON.parse(change.payload).parent ?? 0)
         database.prepare('DELETE FROM taxonomy_changes WHERE id = ?').run(change.id)
-        return true
+        return { operation: change.operation, name: change.name, taxonomyLabel: change.taxonomyLabel }
       })
     },
     retryTaxonomyChanges(input) {
@@ -663,8 +721,10 @@ function openDatabase(filename) {
     },
     pendingTaxonomyChanges(input) {
       const parsed = z.object({ shopUrl: shopUrlSchema }).strict().parse(input)
-      return database.prepare(`SELECT c.id, c.taxonomy, c.term_ref AS termRef, c.operation, c.payload, c.revision, t.route, t.hierarchical
+      return database.prepare(`SELECT c.id, c.taxonomy, c.term_ref AS termRef, c.operation, c.payload, c.revision, t.route, t.hierarchical, t.label AS taxonomyLabel,
+          coalesce(json_extract(c.payload, '$.name'), tt.name) AS name
         FROM taxonomy_changes c JOIN taxonomies t ON t.shop_url = c.shop_url AND t.taxonomy = c.taxonomy
+        LEFT JOIN taxonomy_terms tt ON tt.shop_url = c.shop_url AND tt.taxonomy = c.taxonomy AND tt.term_id = c.term_ref
         WHERE c.shop_url = ? AND c.state = 'pending' ORDER BY c.id`).all(parsed.shopUrl)
         .map((row) => ({ ...row, hierarchical: row.hierarchical === 1, payload: JSON.parse(row.payload) }))
     },
@@ -702,6 +762,39 @@ function openDatabase(filename) {
       const parsed = z.object({ changeId: z.number().int().positive(), revision: z.number().int().nonnegative(), error: z.string().max(500) }).strict().parse(input)
       database.prepare("UPDATE taxonomy_changes SET state = 'failed', error = ? WHERE id = ? AND revision = ?").run(parsed.error, parsed.changeId, parsed.revision)
       return true
+    },
+    appendAudit(input) {
+      const entry = auditEntrySchema.parse(input)
+      const details = entry.details ? JSON.stringify(entry.details) : null
+      if (details && details.length > 64 * 1024) throw new Error('Audit details too large.')
+      database.prepare(`INSERT INTO audit_log (occurred_at, category, action, summary, outcome, source, user_id, username, user_name, target_type, target_id, target_label, shop_url, details)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(new Date().toISOString(), entry.category, entry.action, entry.summary, entry.outcome, entry.source,
+        entry.userId, entry.username, entry.userName, entry.targetType, entry.targetId, entry.targetLabel, entry.shopUrl, details)
+      return true
+    },
+    listAudit(input = {}) {
+      const parsed = auditQuerySchema.parse(input)
+      const where = []
+      const values = []
+      if (parsed.category) { where.push('category = ?'); values.push(parsed.category) }
+      if (parsed.outcome) { where.push('outcome = ?'); values.push(parsed.outcome) }
+      if (parsed.userId === 'system') where.push("source = 'system'")
+      else if (parsed.userId) { where.push('user_id = ?'); values.push(parsed.userId) }
+      if (parsed.from) { where.push('occurred_at >= ?'); values.push(parsed.from) }
+      if (parsed.to) { where.push('occurred_at < ?'); values.push(parsed.to) }
+      if (parsed.query) {
+        const like = `%${parsed.query.replace(/[\\%_]/g, '\\$&')}%`
+        where.push(`(summary LIKE ? ESCAPE '\\' OR target_label LIKE ? ESCAPE '\\' OR username LIKE ? ESCAPE '\\' OR user_name LIKE ? ESCAPE '\\' OR target_id LIKE ? ESCAPE '\\')`)
+        values.push(like, like, like, like, like)
+      }
+      const whereSql = where.length ? `WHERE ${where.join(' AND ')}` : ''
+      const total = database.prepare(`SELECT COUNT(*) AS total FROM audit_log ${whereSql}`).get(...values).total
+      const entries = database.prepare(`SELECT id, occurred_at AS occurredAt, category, action, summary, outcome, source, user_id AS userId, username, user_name AS userName,
+          target_type AS targetType, target_id AS targetId, target_label AS targetLabel, shop_url AS shopUrl, details
+        FROM audit_log ${whereSql} ORDER BY occurred_at DESC, id DESC LIMIT ${parsed.pageSize} OFFSET ${parsed.page * parsed.pageSize}`).all(...values)
+        .map((entry) => ({ ...entry, details: entry.details ? JSON.parse(entry.details) : null }))
+      const users = database.prepare(`SELECT user_id AS id, max(user_name) AS name, max(username) AS username FROM audit_log WHERE user_id IS NOT NULL GROUP BY user_id ORDER BY name COLLATE NOCASE`).all()
+      return { entries, total, page: parsed.page, pageSize: parsed.pageSize, users }
     },
     close() { database.close() },
   }

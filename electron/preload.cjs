@@ -4,6 +4,10 @@ let sessionToken = null
 const authListeners = new Set()
 const taxonomyProgressListeners = new Set()
 const taxonomyChangeListeners = new Set()
+const auditListeners = new Set()
+ipcRenderer.on('catalog:v2:audit-appended', () => {
+  for (const listener of auditListeners) listener()
+})
 ipcRenderer.on('catalog:v2:taxonomies-changed', () => {
   for (const listener of taxonomyChangeListeners) listener()
 })
@@ -54,5 +58,7 @@ contextBridge.exposeInMainWorld('catalogDesk', {
   discardTaxonomyChange: (ref) => authorized('catalog:v2:taxonomies-discard', ref),
   syncTaxonomies: (retryFailed = false) => authorized('catalog:v2:taxonomies-sync', { retryFailed }),
   onTaxonomiesChanged: (listener) => { taxonomyChangeListeners.add(listener); return () => taxonomyChangeListeners.delete(listener) },
+  listAudit: (query) => authorized('catalog:v2:audit-list', query),
+  onAuditAppended: (listener) => { auditListeners.add(listener); return () => auditListeners.delete(listener) },
   onTaxonomyImportProgress: (listener) => { taxonomyProgressListeners.add(listener); return () => taxonomyProgressListeners.delete(listener) },
 })

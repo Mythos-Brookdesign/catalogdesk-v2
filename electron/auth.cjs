@@ -133,7 +133,7 @@ function createAuthenticator(database, {
       if (actor.role !== 'admin') throw new Error('Nur Administratoren duerfen Benutzer verwalten.')
       const parsed = profileSchema.omit({ password: true }).extend({
         id: z.string().uuid().optional(), role: z.enum(['admin', 'employee']),
-        permissions: z.array(z.enum(['dashboard', 'products', 'orders', 'customers', 'settings', 'users', 'shop', 'taxonomies', 'sync'])).max(9),
+        permissions: z.array(z.enum(['dashboard', 'products', 'orders', 'customers', 'settings', 'users', 'shop', 'taxonomies', 'sync', 'history'])).max(10),
         password: passwordSchema.optional(),
       }).strict().parse(payload)
       const { password, ...profile } = parsed

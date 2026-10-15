@@ -46,7 +46,7 @@ export type CatalogUser = {
   role: 'admin' | 'employee'
   permissions: MenuSection[]
 }
-export type MenuSection = 'dashboard' | 'products' | 'orders' | 'customers' | 'settings' | 'users' | 'shop' | 'taxonomies' | 'sync'
+export type MenuSection = 'dashboard' | 'products' | 'orders' | 'customers' | 'settings' | 'users' | 'shop' | 'taxonomies' | 'sync' | 'history'
 export type UserInput = AdminProfile & { id?: string; role: CatalogUser['role']; permissions: MenuSection[] }
 export type UserResult<Value> = { ok: true; value: Value } | { ok: false; error: string }
 
@@ -97,6 +97,17 @@ export type TaxonomyTermChange =
   | { taxonomy: string; operation: 'delete'; termId: number }
 export type TaxonomySyncResult = { synced: number; failed: number; offline: boolean; pendingChanges: number; failedChanges: number }
 export type TaxonomyTermOption = { id: number; path: string; depth: number }
+export type AuditCategory = 'auth' | 'users' | 'settings' | 'shop' | 'taxonomies' | 'sync' | 'catalog'
+export type AuditChange = { field: string; before: unknown; after: unknown }
+export type AuditEntry = {
+  id: number; occurredAt: string; category: AuditCategory; action: string; summary: string
+  outcome: 'success' | 'failure'; source: 'user' | 'system'
+  userId: string | null; username: string | null; userName: string | null
+  targetType: string | null; targetId: string | null; targetLabel: string | null; shopUrl: string | null
+  details: ({ changes?: AuditChange[] } & Record<string, unknown>) | null
+}
+export type AuditQuery = { query?: string; category?: AuditCategory; userId?: string; outcome?: 'success' | 'failure'; from?: string; to?: string; page?: number; pageSize?: number }
+export type AuditPage = { entries: AuditEntry[]; total: number; page: number; pageSize: number; users: { id: string; name: string | null; username: string | null }[] }
 export type TaxonomyTermQuery = { taxonomy: string; query?: string; page?: number; pageSize?: number }
 export type TaxonomyTermPage = { terms: TaxonomyTerm[]; total: number; page: number; pageSize: number }
 export type TaxonomyImportProgress = { label: string; completed: number; total: number }
@@ -128,6 +139,8 @@ declare global {
       discardTaxonomyChange: (ref: { taxonomy: string; termId: number }) => Promise<UserResult<boolean>>
       syncTaxonomies: (retryFailed?: boolean) => Promise<UserResult<TaxonomySyncResult>>
       onTaxonomiesChanged: (listener: () => void) => () => void
+      listAudit: (query: AuditQuery) => Promise<UserResult<AuditPage>>
+      onAuditAppended: (listener: () => void) => () => void
       onTaxonomyImportProgress: (listener: (progress: TaxonomyImportProgress) => void) => () => void
     }
   }

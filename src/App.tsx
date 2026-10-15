@@ -5,6 +5,7 @@ import {
   CircleHelp,
   Database,
   GitCompareArrows,
+  History,
   LayoutDashboard,
   LogOut,
   PlugZap,
@@ -21,6 +22,7 @@ import { UsersPage } from './features/users/UsersPage'
 import { ShopConnectionPage } from './features/settings/SettingsPage'
 import { AppearanceSettingsPage } from './features/settings/AppearanceSettingsPage'
 import { TaxonomiesPage } from './features/taxonomies/TaxonomiesPage'
+import { HistoryPage } from './features/history/HistoryPage'
 import type { CatalogUser } from './types/desktop'
 
 type Section =
@@ -33,6 +35,7 @@ type Section =
   | 'shop'
   | 'taxonomies'
   | 'sync'
+  | 'history'
 
 const sectionTitles: Record<Section, string> = {
   dashboard: 'Dashboard',
@@ -44,6 +47,7 @@ const sectionTitles: Record<Section, string> = {
   shop: 'Shopverbindung',
   taxonomies: 'Taxonomien',
   sync: 'Synchronisation',
+  history: 'Historie',
 }
 
 const menuGroups = [
@@ -64,6 +68,7 @@ const menuGroups = [
       { section: 'shop', icon: PlugZap },
       { section: 'taxonomies', icon: Tags },
       { section: 'sync', icon: GitCompareArrows },
+      { section: 'history', icon: History },
     ],
   },
 ] as const
@@ -154,7 +159,8 @@ function App({
         {canAccess(activeSection) && activeSection === 'settings' && <AppearanceSettingsPage />}
         {canAccess(activeSection) && activeSection === 'shop' && <ShopConnectionPage />}
         {canAccess(activeSection) && activeSection === 'taxonomies' && <TaxonomiesPage />}
-        {canAccess(activeSection) && !['dashboard', 'products', 'users', 'settings', 'shop', 'taxonomies'].includes(activeSection) && (
+        {canAccess(activeSection) && activeSection === 'history' && <HistoryPage />}
+        {canAccess(activeSection) && !['dashboard', 'products', 'users', 'settings', 'shop', 'taxonomies', 'history'].includes(activeSection) && (
           <EmptySection title={sectionTitles[activeSection]} />
         )}
       </div>

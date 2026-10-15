@@ -51,6 +51,16 @@ Queued changes are synchronized in creation order every 30 seconds, when the net
 
 General Settings provides Light and Dark modes. Selection applies immediately to the whole app and is persisted as a shared local workspace setting in SQLite (schema v4). The login screen and native window background load the saved mode before displaying the workspace. Theme updates require the Settings permission; reading only the theme is permitted before login. A failed save restores the previous mode.
 
+## Usage History (Audit Log)
+
+History lists who did what and when: logins (including failed attempts with the entered username) and logouts, the first admin setup, user changes, theme changes, shop connection save/test/remove, taxonomy imports, term create/edit/delete/discard, and every synchronization run (manual, before an import, or automatic in the background as "System"). Rejected actions are recorded as failures with their reason.
+
+Entries are written in Main (`audit()` in `electron/main.cjs`), where the acting user is known from the session, and stored in the SQLite table `audit_log` (schema v9). Each entry holds the time, a snapshot of the user's name and username (readable after the user is deleted), area, action code, a readable summary, the affected record (type, ID, label), shop URL, outcome and details such as before/after values. Passwords and API keys are never recorded, only that they were changed. Triggers make the table append-only; the app offers no way to edit or delete entries. As with the rest of the local database, this does not protect against other processes of the same operating-system user editing the file. There is no automatic cleanup yet.
+
+The History screen (permission "Historie"; admins always) groups entries by day, filters by search text, area, user (including System), outcome and date range, shows details with before/after tables, and updates live while the first page is open.
+
+New features must record every change and every shop access through `audit()`.
+
 ## User Feedback (Notifications)
 
 All feedback about the outcome of an action uses the shared notifications in `src/components/notifications`: `const notify = useNotify()` and then `notify.success | info | warning | error(title, { message, key })`.

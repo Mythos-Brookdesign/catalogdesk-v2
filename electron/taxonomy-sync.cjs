@@ -5,7 +5,8 @@ const { termSchema, toTerm } = require('./taxonomies.cjs')
 // remaining changes stay queued; shop-side rejections are stored per change with the shop's message.
 async function syncTaxonomyChanges(connection, database, fetcher) {
   const shopUrl = normalizeUrl(connection.url)
-  const result = { synced: 0, failed: 0, offline: false }
+  const result = { synced: 0, failed: 0, offline: false, changes: [] }
+  const record = (change, outcome, extra = {}) => result.changes.push({ taxonomy: change.taxonomy, taxonomyLabel: change.taxonomyLabel, name: change.name, operation: change.operation, termRef: change.termRef, outcome, ...extra })
   const created = new Map()
   const key = (taxonomy, ref) => `${taxonomy}\u0000${ref}`
   for (const change of await database('pendingTaxonomyChanges', { shopUrl })) {
@@ -34,12 +35,15 @@ async function syncTaxonomyChanges(connection, database, fetcher) {
       await database('completeTaxonomyChange', { changeId: change.id, revision: change.revision, term })
       if (term && change.termRef < 0) created.set(key(change.taxonomy, change.termRef), term.id)
       result.synced++
+      record(change, 'success', { termId: term?.id ?? change.termRef })
     } catch (error) {
       if (error instanceof WooError && error.offline) { result.offline = true; break }
       const message = error instanceof WooError ? error.message
         : 'Aenderung konnte nicht uebertragen werden.'
-      await database('failTaxonomyChange', { changeId: change.id, revision: change.revision, error: change.operation === 'update' && error.status === 404 ? 'Der Begriff existiert im Shop nicht mehr.' : message })
+      const reason = change.operation === 'update' && error.status === 404 ? 'Der Begriff existiert im Shop nicht mehr.' : message
+      await database('failTaxonomyChange', { changeId: change.id, revision: change.revision, error: reason })
       result.failed++
+      record(change, 'failure', { error: reason })
       // Missing write permission affects every change; stop instead of failing them one by one.
       if (error instanceof WooError && (error.status === 401 || error.status === 403)) break
     }

@@ -257,7 +257,7 @@ test('creates the first admin before showing the app and requires login on the n
     await page.getByRole('button', { name: 'Anmelden', exact: true }).click()
     await expect(page.getByRole('heading', { name: 'Produkte', exact: true })).toBeVisible()
     await expect(page.getByRole('button', { name: 'Produkte', exact: true })).toBeVisible()
-    for (const title of ['Dashboard', 'Benutzer', 'Bestellungen', 'Kunden', 'Einstellungen', 'Shopverbindung', 'Taxonomien', 'Synchronisation']) {
+    for (const title of ['Dashboard', 'Benutzer', 'Bestellungen', 'Kunden', 'Einstellungen', 'Shopverbindung', 'Taxonomien', 'Synchronisation', 'Historie']) {
       await expect(page.getByRole('button', { name: title, exact: true })).toHaveCount(0)
     }
     await expect(page.getByText('EINSTELLUNGEN', { exact: true })).toHaveCount(0)
@@ -270,6 +270,7 @@ test('creates the first admin before showing the app and requires login on the n
     expect(await page.evaluate(() => window.catalogDesk!.saveShopConnection({ url: 'https://other.example/', consumerKey: 'ck_' + 'a'.repeat(40), consumerSecret: 'cs_' + 'b'.repeat(40) }))).toMatchObject({ ok: false })
     expect(await page.evaluate(() => window.catalogDesk!.deleteShopConnection())).toMatchObject({ ok: false })
     expect(await page.evaluate(() => window.catalogDesk!.importTaxonomies())).toMatchObject({ ok: false, error: expect.stringContaining('Benutzerrolle') })
+    expect(await page.evaluate(() => window.catalogDesk!.listAudit({}))).toMatchObject({ ok: false, error: expect.stringContaining('Benutzerrolle') })
     expect(await page.evaluate(() => window.catalogDesk!.changeTaxonomyTerm({ taxonomy: 'product_cat', operation: 'delete', termId: 4 }))).toMatchObject({ ok: false, error: expect.stringContaining('Benutzerrolle') })
     expect(await page.evaluate(() => window.catalogDesk!.taxonomyOverview())).toMatchObject({ ok: false })
     await page.getByRole('button', { name: 'Abmelden', exact: true }).click()
@@ -285,6 +286,27 @@ test('creates the first admin before showing the app and requires login on the n
     await page.getByRole('alertdialog').getByRole('button', { name: 'Verbindung endgueltig entfernen' }).click()
     await expect(page.getByRole('status').filter({ hasText: 'Shopverbindung entfernt' })).toBeVisible()
     expect(await page.evaluate(() => window.catalogDesk!.shopConnection())).toEqual({ ok: true, value: null })
+
+    await page.getByRole('button', { name: 'Historie', exact: true }).click()
+    const history = page.locator('.history-table')
+    for (const summary of ['Shopverbindung entfernt', 'Benutzer „Grace Mitarbeiter“ geloescht', 'Benutzer „Grace Hopper“ angelegt', 'Begriff „Hosen“ in Kategorien angelegt',
+      'Begriff „T-Shirts“ in Kategorien geaendert', '2 Taxonomie-Aenderungen an den Shop uebertragen', 'Taxonomien importiert: 7 Taxonomien, 8 Begriffe', 'Shopverbindung gespeichert', 'Farbschema auf Dunkel geaendert', 'Ersten Administrator eingerichtet'])
+      await expect(history.getByRole('cell', { name: summary, exact: true }).first()).toBeVisible()
+    await history.getByRole('button', { name: 'Details: Benutzer „Grace Mitarbeiter“ geaendert' }).click()
+    const changeRow = history.locator('.history-changes tr').filter({ hasText: 'Name' }).first()
+    await expect(changeRow).toContainText('Hopper')
+    await expect(changeRow).toContainText('Mitarbeiter')
+    await expect(page.locator('.history-details')).toContainText('Ada Lovelace (ada.admin)')
+    await page.screenshot({ path: testInfo.outputPath('history-desktop.png') })
+    await page.getByLabel('Bereich', { exact: true }).selectOption('taxonomies')
+    await expect(history.getByRole('cell', { name: 'Shopverbindung entfernt', exact: true })).toHaveCount(0)
+    await expect(history.getByRole('cell', { name: 'Begriff „Hosen“ in Kategorien geloescht', exact: true })).toBeVisible()
+    await page.getByLabel('Historie durchsuchen').fill('Hosen')
+    await expect(history.locator('.history-row')).toHaveCount(2)
+    await page.setViewportSize({ width: 600, height: 850 })
+    expect(await page.evaluate(() => document.documentElement.scrollWidth <= document.documentElement.clientWidth)).toBe(true)
+    await page.screenshot({ path: testInfo.outputPath('history-narrow.png') })
+    await page.setViewportSize({ width: 1440, height: 920 })
   } finally {
     await application?.close()
     await rm(userData, { recursive: true, force: true })
