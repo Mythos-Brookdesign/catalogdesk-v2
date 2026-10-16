@@ -45,4 +45,17 @@ function describeModules(detected, switchedOff = []) {
   })
 }
 
-module.exports = { moduleIds, detectModules, activeModules, taxonomyLabel, termField, describeModules }
+// A module owns its taxonomies and term fields. While a detected module is switched off or not licensed,
+// everything it owns is hidden (the data stays stored). Plugin data no module owns is always shown.
+function hiddenByModules(detected, switchedOff = []) {
+  const taxonomies = new Set()
+  const fields = new Set()
+  for (const module of registry) {
+    if (!detected.includes(module.id) || (isLicensed(module.id) && !switchedOff.includes(module.id))) continue
+    for (const taxonomy of Object.keys(module.taxonomyLabels ?? {})) taxonomies.add(taxonomy)
+    for (const field of Object.keys(module.termFields ?? {})) fields.add(field)
+  }
+  return { taxonomies, fields }
+}
+
+module.exports = { moduleIds, detectModules, activeModules, taxonomyLabel, termField, describeModules, hiddenByModules }

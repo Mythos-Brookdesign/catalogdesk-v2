@@ -6,6 +6,7 @@ const { z } = require('zod')
 const { scalarFields, variationStatuses, termFieldName, isTerm, isTermList, same } = require('./product-fields.cjs')
 const modules = require('./modules/index.cjs')
 const { humanize } = require('./taxonomies.cjs')
+const { findDuplicate } = require('./term-names.cjs')
 
 const shopUrlSchema = z.string().url().max(2048).refine((value) => {
   const url = new URL(value)
@@ -120,7 +121,8 @@ const productChangeSchema = z.object({
   shopUrl: shopUrlSchema,
   productId: z.number().int().positive(),
   values: z.record(z.string(), z.unknown()).default({}),
-  terms: z.record(z.string().regex(termFieldName), z.union([z.array(z.number().int().positive()).max(1000), z.number().int().nonnegative()])).default({}),
+  // Negative IDs are terms created locally that wait for the shop.
+  terms: z.record(z.string().regex(termFieldName), z.union([z.array(z.number().int().min(-Number.MAX_SAFE_INTEGER).max(Number.MAX_SAFE_INTEGER).refine((id) => id !== 0)).max(1000), z.number().int().min(-Number.MAX_SAFE_INTEGER).max(Number.MAX_SAFE_INTEGER)])).default({}),
 }).strict()
 const productRefSchema = z.object({ shopUrl: shopUrlSchema, productId: z.number().int().positive() }).strict()
 const catalogProductSchema = catalogSchema.shape.products.element
@@ -133,7 +135,7 @@ const newAdminSchema = z.object({
   salt: z.string().regex(/^[a-f0-9]{32}$/),
   passwordHash: z.string().regex(/^[a-f0-9]{128}$/),
 }).strict()
-const menuPermissions = z.array(z.enum(['dashboard', 'products', 'orders', 'customers', 'settings', 'users', 'shop', 'taxonomies', 'sync', 'history'])).max(10)
+const menuPermissions = z.array(z.enum(['dashboard', 'products', 'orders', 'customers', 'settings', 'users', 'shop', 'taxonomies', 'sync', 'history', 'plugins'])).max(11)
 const managedUserSchema = newAdminSchema.omit({ salt: true, passwordHash: true }).extend({
   id: z.string().uuid().optional(),
   role: z.enum(['admin', 'employee']),
@@ -485,6 +487,7 @@ function openDatabase(filename) {
   }
 
   function editableTaxonomy(shopUrl, taxonomy) {
+    if (hiddenByModules(shopUrl).taxonomies.has(taxonomy)) throw new Error('Taxonomie wurde nicht gefunden. Das zugehoerige Plugin-Modul ist ausgeschaltet.')
     const entry = database.prepare('SELECT label, hierarchical, available, route FROM taxonomies WHERE shop_url = ? AND taxonomy = ?').get(shopUrl, taxonomy)
     if (!entry) throw new Error('Taxonomie wurde nicht gefunden. Bitte Taxonomien neu importieren.')
     // Only WooCommerce routes accept the API keys for writes; wp/v2 would need a WordPress login.
@@ -497,6 +500,26 @@ function openDatabase(filename) {
   function reparentQueued(shopUrl, taxonomy, from, to) {
     database.prepare(`UPDATE taxonomy_changes SET payload = json_set(payload, '$.parent', ?)
       WHERE shop_url = ? AND taxonomy = ? AND operation IN ('create', 'update') AND json_extract(payload, '$.parent') = ?`).run(to, shopUrl, taxonomy, from)
+  }
+
+  // Product edits may reference a term created offline (negative ID). Once the shop created it, the
+  // reference gets the real term; when the pending term is dropped, the reference is removed.
+  function replaceProductTermRef(shopUrl, ref, replacement) {
+    const update = database.prepare('UPDATE product_changes SET changes = ? WHERE id = ?')
+    for (const row of database.prepare('SELECT id, changes FROM product_changes WHERE shop_url = ?').all(shopUrl)) {
+      const changes = JSON.parse(row.changes)
+      let touched = false
+      for (const [field, value] of Object.entries(changes)) {
+        if (isTermList(value) && value.some((term) => term.id === ref)) {
+          changes[field] = value.flatMap((term) => term.id !== ref ? [term] : replacement ? [replacement] : [])
+          touched = true
+        } else if (isTerm(value) && value.id === ref) {
+          changes[field] = replacement ?? { id: 0, name: '', slug: '' }
+          touched = true
+        }
+      }
+      if (touched) update.run(JSON.stringify(changes), row.id)
+    }
   }
 
   function transaction(action) {
@@ -571,6 +594,9 @@ function openDatabase(filename) {
   function switchedOffModules(shopUrl) {
     return database.prepare('SELECT module_id AS id FROM module_settings WHERE shop_url = ? AND enabled = 0').all(shopUrl).map((row) => row.id)
   }
+  function hiddenByModules(shopUrl) {
+    return modules.hiddenByModules(detectedModules(shopUrl), switchedOffModules(shopUrl))
+  }
   // Detected and not switched off; licensing is checked by the module registry.
   function activeModuleIds(shopUrl) {
     const off = switchedOffModules(shopUrl)
@@ -590,7 +616,7 @@ function openDatabase(filename) {
     const detected = activeModuleIds(shopUrl)
     let fields = database.prepare('SELECT scope, field, multiple FROM product_term_fields WHERE shop_url = ?').all(shopUrl).map((row) => ({ ...row, multiple: row.multiple === 1 }))
     if (!fields.length) fields = ['categories', 'tags', 'brands'].map((field) => ({ scope: 'product', field, multiple: true }))
-    const taxonomies = database.prepare("SELECT taxonomy, label, hierarchical FROM taxonomies WHERE shop_url = ? AND kind != 'attribute' AND available = 1").all(shopUrl)
+    const taxonomies = database.prepare("SELECT taxonomy, label, hierarchical, route FROM taxonomies WHERE shop_url = ? AND kind != 'attribute' AND available = 1").all(shopUrl)
     const known = new Map(taxonomies.map((entry) => [entry.taxonomy, entry]))
     const observed = new Map()
     for (const row of database.prepare('SELECT field, taxonomy, COUNT(*) AS uses FROM product_taxonomies WHERE shop_url = ? AND field IS NOT NULL GROUP BY field, taxonomy ORDER BY uses DESC').all(shopUrl))
@@ -606,7 +632,9 @@ function openDatabase(filename) {
       const candidates = taxonomies.filter((entry) => !Object.values(coreTermFields).includes(entry.taxonomy) && tokens(entry.taxonomy).every((token) => fieldTokens.has(token)))
       return candidates.length === 1 ? candidates[0].taxonomy : null
     }
-    const resolved = fields.map((field) => ({ ...field, taxonomy: resolve(field.field) })).filter((field) => field.taxonomy && field.field !== 'shipping_class')
+    const hidden = hiddenByModules(shopUrl)
+    const resolved = fields.map((field) => ({ ...field, taxonomy: resolve(field.field) }))
+      .filter((field) => field.taxonomy && field.field !== 'shipping_class' && !hidden.fields.has(field.field) && !hidden.taxonomies.has(field.taxonomy))
     // Two fields can point to the same taxonomy (e.g. regular and sale price labels); name them apart.
     return resolved.map((field) => {
       const fromModule = modules.termField(detected, field.field)
@@ -615,6 +643,8 @@ function openDatabase(filename) {
         ...field,
         label: fromModule?.taxonomy === field.taxonomy ? fromModule.label : shared ? `${known.get(field.taxonomy).label} (${field.field})` : known.get(field.taxonomy).label,
         hierarchical: known.get(field.taxonomy).hierarchical === 1,
+        // New terms can be created from the product editor where the shop accepts writes (WooCommerce route).
+        editable: known.get(field.taxonomy).route.startsWith('wc/v3/'),
         section: fromModule?.taxonomy === field.taxonomy ? fromModule.section : null,
       }
     })
@@ -751,6 +781,7 @@ function openDatabase(filename) {
         LEFT JOIN product_changes c ON c.shop_url = p.shop_url AND c.product_id = p.product_id`
       const total = database.prepare(`SELECT COUNT(*) AS total ${from} WHERE ${whereSql}`).get(...values).total
       // Families stay together: each variable product is followed by its variations.
+      const hiddenTaxonomies = hiddenByModules(shopUrl).taxonomies
       // Queued edits are shown right away: their fields are merged over the shop data.
       const products = database.prepare(`SELECT p.product_id AS id, p.parent_id AS parentId, p.type, p.product_type AS productType,
           coalesce(json_extract(c.changes, '$.sku'), p.sku) AS sku, coalesce(json_extract(c.changes, '$.name'), p.name) AS name, coalesce(json_extract(c.changes, '$.status'), p.status) AS status,
@@ -769,7 +800,7 @@ function openDatabase(filename) {
         ${from} WHERE ${whereSql}
         ORDER BY coalesce(parent.name, p.name) COLLATE NOCASE, coalesce(p.parent_id, p.product_id), p.parent_id IS NOT NULL, p.name COLLATE NOCASE, p.product_id
         LIMIT ? OFFSET ?`).all(...values, parsed.pageSize, parsed.page * parsed.pageSize)
-        .map((row) => ({ ...row, payload: JSON.parse(row.payload), terms: JSON.parse(row.terms), priceRange: row.priceRange && JSON.parse(row.priceRange)[0] !== null ? JSON.parse(row.priceRange) : null, changes: row.changes ? JSON.parse(row.changes) : null, base: row.base ? JSON.parse(row.base) : null, remote: row.remote ? JSON.parse(row.remote) : null }))
+        .map((row) => ({ ...row, payload: JSON.parse(row.payload), terms: JSON.parse(row.terms).filter((term) => !hiddenTaxonomies.has(term.taxonomy)), priceRange: row.priceRange && JSON.parse(row.priceRange)[0] !== null ? JSON.parse(row.priceRange) : null, changes: row.changes ? JSON.parse(row.changes) : null, base: row.base ? JSON.parse(row.base) : null, remote: row.remote ? JSON.parse(row.remote) : null }))
       return { products, total, page: parsed.page, pageSize: parsed.pageSize, currency, changeCounts: this.productChangeCounts({ shopUrl }) }
     },
     replaceCatalog(input) {
@@ -848,6 +879,7 @@ function openDatabase(filename) {
       const parsed = z.object({ shopUrl: shopUrlSchema.optional() }).strict().parse(input)
       const shopUrl = taxonomyShop(parsed.shopUrl)
       if (!shopUrl) return { shopUrl: null, importedAt: null, taxonomies: [] }
+      const hidden = hiddenByModules(shopUrl).taxonomies
       const taxonomies = database.prepare(`SELECT t.taxonomy, t.kind, t.label, t.route, t.hierarchical, t.available, t.attribute, t.imported_at AS importedAt,
           (SELECT COUNT(*) FROM taxonomy_terms terms WHERE terms.shop_url = t.shop_url AND terms.taxonomy = t.taxonomy)
             + (SELECT COUNT(*) FROM taxonomy_changes c WHERE c.shop_url = t.shop_url AND c.taxonomy = t.taxonomy AND c.operation = 'create')
@@ -855,6 +887,7 @@ function openDatabase(filename) {
           (SELECT COUNT(*) FROM taxonomy_changes c WHERE c.shop_url = t.shop_url AND c.taxonomy = t.taxonomy AND c.state = 'pending') AS pendingCount,
           (SELECT COUNT(*) FROM taxonomy_changes c WHERE c.shop_url = t.shop_url AND c.taxonomy = t.taxonomy AND c.state = 'failed') AS failedCount
         FROM taxonomies t WHERE t.shop_url = ? ORDER BY t.position`).all(shopUrl)
+        .filter((row) => !hidden.has(row.taxonomy))
         .map((row) => ({ ...row, hierarchical: row.hierarchical === 1, available: row.available === 1, editable: row.available === 1 && row.route.startsWith('wc/v3/'), attribute: row.attribute ? JSON.parse(row.attribute) : null }))
       return { shopUrl, importedAt: taxonomies[0]?.importedAt ?? null, taxonomies, ...this.taxonomyChangeCounts({ shopUrl }) }
     },
@@ -864,16 +897,16 @@ function openDatabase(filename) {
       const shopUrl = taxonomyShop(parsed.shopUrl)
       if (!shopUrl) return empty
       const taxonomy = database.prepare('SELECT hierarchical FROM taxonomies WHERE shop_url = ? AND taxonomy = ?').get(shopUrl, parsed.taxonomy)
-      if (!taxonomy) return empty
+      if (!taxonomy || hiddenByModules(shopUrl).taxonomies.has(parsed.taxonomy)) return empty
       return { ...queryTerms(shopUrl, parsed.taxonomy, taxonomy.hierarchical, parsed.query, parsed.pageSize, parsed.page * parsed.pageSize), page: parsed.page, pageSize: parsed.pageSize }
     },
     taxonomyTermOptions(input) {
       const parsed = taxonomyTermsQuerySchema.pick({ shopUrl: true, taxonomy: true }).strict().parse(input)
       const shopUrl = taxonomyShop(parsed.shopUrl)
       const taxonomy = shopUrl && database.prepare('SELECT hierarchical FROM taxonomies WHERE shop_url = ? AND taxonomy = ?').get(shopUrl, parsed.taxonomy)
-      if (!taxonomy) return []
+      if (!taxonomy || hiddenByModules(shopUrl).taxonomies.has(parsed.taxonomy)) return []
       return queryTerms(shopUrl, parsed.taxonomy, taxonomy.hierarchical, '', 20_000, 0).terms
-        .filter((term) => term.state !== 'delete').map(({ id, path, depth }) => ({ id, path, depth }))
+        .filter((term) => term.state !== 'delete').map(({ id, name, slug, path, depth }) => ({ id, name, slug, path, depth }))
     },
     taxonomyChangeCounts(input = {}) {
       const parsed = z.object({ shopUrl: shopUrlSchema.optional() }).strict().parse(input)
@@ -897,6 +930,7 @@ function openDatabase(filename) {
         if (operation === 'delete') {
           if (termId < 0) {
             reparentQueued(shopUrl, taxonomy, termId, term.parentId)
+            replaceProductTermRef(shopUrl, termId, null)
             database.prepare('DELETE FROM taxonomy_changes WHERE id = ?').run(existing.id)
           } else if (existing) {
             database.prepare("UPDATE taxonomy_changes SET operation = 'delete', payload = '{}', state = 'pending', error = NULL, revision = revision + 1, updated_at = ? WHERE id = ?").run(now, existing.id)
@@ -913,12 +947,10 @@ function openDatabase(filename) {
           throw new Error('Uebergeordneter Begriff wurde nicht gefunden.')
         for (let parent = fields.parent, steps = 0; parent !== 0 && steps < 100; parent = terms.get(parent)?.parentId ?? 0, steps++)
           if (parent === termId) throw new Error('Ein Begriff kann nicht unter sich selbst eingeordnet werden.')
-        for (const other of terms.values()) {
-          if (other.id === termId || other.state === 'delete') continue
-          if (fields.slug && other.slug.toLowerCase() === fields.slug.toLowerCase()) throw new Error('Der Slug ist bereits vergeben.')
-          if (other.parentId === fields.parent && other.name.toLowerCase() === fields.name.toLowerCase())
-            throw new Error('Ein Begriff mit diesem Namen existiert auf dieser Ebene bereits.')
-        }
+        // A term exists only once per taxonomy: same name (ignoring case and spaces) or the same slug.
+        const others = [...terms.values()].filter((other) => other.state !== 'delete')
+        const duplicate = findDuplicate(others, fields, termId ?? null)
+        if (duplicate) throw new Error(`Ein Begriff „${duplicate.name}“ existiert in ${entry.label} bereits.`)
         const payload = JSON.stringify(fields)
         if (operation === 'create') {
           const { lastInsertRowid } = database.prepare("INSERT INTO taxonomy_changes (shop_url, taxonomy, term_ref, operation, payload, created_at, updated_at) VALUES (?, ?, 0, 'create', ?, ?, ?)").run(shopUrl, taxonomy, payload, now, now)
@@ -938,7 +970,10 @@ function openDatabase(filename) {
           LEFT JOIN taxonomies t ON t.shop_url = c.shop_url AND t.taxonomy = c.taxonomy
           WHERE c.shop_url = ? AND c.taxonomy = ? AND c.term_ref = ?`).get(parsed.shopUrl, parsed.taxonomy, parsed.termId)
         if (!change) throw new Error('Aenderung wurde nicht gefunden.')
-        if (change.operation === 'create') reparentQueued(parsed.shopUrl, parsed.taxonomy, parsed.termId, JSON.parse(change.payload).parent ?? 0)
+        if (change.operation === 'create') {
+          reparentQueued(parsed.shopUrl, parsed.taxonomy, parsed.termId, JSON.parse(change.payload).parent ?? 0)
+          replaceProductTermRef(parsed.shopUrl, parsed.termId, null)
+        }
         database.prepare('DELETE FROM taxonomy_changes WHERE id = ?').run(change.id)
         return { operation: change.operation, name: change.name, taxonomyLabel: change.taxonomyLabel }
       })
@@ -970,6 +1005,7 @@ function openDatabase(filename) {
             .run(shopUrl, taxonomy, term.id, term.name, term.slug, JSON.stringify(term.payload), term.parentId, term.count, term.menuOrder)
           if (termRef < 0) {
             reparentQueued(shopUrl, taxonomy, termRef, term.id)
+            replaceProductTermRef(shopUrl, termRef, { id: term.id, name: term.name, slug: term.slug })
             // Edited again while the request was running: keep the newer edit as an update of the created term.
             if (change.revision !== parsed.revision) {
               database.prepare("UPDATE taxonomy_changes SET term_ref = ?, operation = 'update' WHERE id = ?").run(term.id, change.id)
@@ -1022,7 +1058,7 @@ function openDatabase(filename) {
       if (!shopUrl) return { termFields: [], shippingClasses: [] }
       const termFields = termFieldTaxonomies(shopUrl).map((field) => ({
         ...field,
-        terms: queryTerms(shopUrl, field.taxonomy, field.hierarchical ? 1 : 0, '', 20_000, 0).terms.filter((term) => term.id > 0 && term.state !== 'delete').map(({ id, name, path, depth }) => ({ id, name, path, depth })),
+        terms: queryTerms(shopUrl, field.taxonomy, field.hierarchical ? 1 : 0, '', 20_000, 0).terms.filter((term) => term.state !== 'delete').map(({ id, name, slug, path, depth }) => ({ id, name, slug, path, depth })),
       }))
       const shippingClasses = database.prepare("SELECT slug, name FROM taxonomy_terms WHERE shop_url = ? AND taxonomy = 'product_shipping_class' ORDER BY name COLLATE NOCASE").all(shopUrl)
       return { termFields, shippingClasses }
@@ -1050,7 +1086,9 @@ function openDatabase(filename) {
         }
         // Term fields are stored in the shop's own format ({ id, name, slug }) so the merged payload stays readable.
         const termFields = new Map(termFieldTaxonomies(shopUrl).filter((field) => field.scope === (variation ? 'variation' : 'product')).map((field) => [field.field, field]))
-        const termLookup = database.prepare('SELECT term_id AS id, name, slug FROM taxonomy_terms WHERE shop_url = ? AND taxonomy = ? AND term_id = ?')
+        const shopTerm = database.prepare('SELECT term_id AS id, name, slug FROM taxonomy_terms WHERE shop_url = ? AND taxonomy = ? AND term_id = ?')
+        const pendingTerm = database.prepare("SELECT term_ref AS id, json_extract(payload, '$.name') AS name, json_extract(payload, '$.slug') AS slug FROM taxonomy_changes WHERE shop_url = ? AND taxonomy = ? AND term_ref = ? AND operation = 'create'")
+        const termLookup = { get: (shop, taxonomy, id) => (id < 0 ? pendingTerm : shopTerm).get(shop, taxonomy, id) }
         for (const [field, raw] of Object.entries(parsed.terms)) {
           const definition = termFields.get(field)
           if (!definition) throw new Error(`Produktfeld ${field} kann nicht bearbeitet werden.`)

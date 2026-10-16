@@ -9,6 +9,7 @@ import {
   LayoutDashboard,
   LogOut,
   PlugZap,
+  Puzzle,
   Settings,
   ShoppingBag,
   Tags,
@@ -23,6 +24,7 @@ import { ShopConnectionPage } from './features/settings/SettingsPage'
 import { AppearanceSettingsPage } from './features/settings/AppearanceSettingsPage'
 import { TaxonomiesPage } from './features/taxonomies/TaxonomiesPage'
 import { HistoryPage } from './features/history/HistoryPage'
+import { PluginsPage } from './features/plugins/PluginsPage'
 import type { CatalogUser } from './types/desktop'
 
 type Section =
@@ -36,6 +38,7 @@ type Section =
   | 'taxonomies'
   | 'sync'
   | 'history'
+  | 'plugins'
 
 const sectionTitles: Record<Section, string> = {
   dashboard: 'Dashboard',
@@ -45,6 +48,7 @@ const sectionTitles: Record<Section, string> = {
   settings: 'Einstellungen',
   users: 'Benutzer',
   shop: 'Shopverbindung',
+  plugins: 'Plugins',
   taxonomies: 'Taxonomien',
   sync: 'Synchronisation',
   history: 'Historie',
@@ -66,6 +70,7 @@ const menuGroups = [
       { section: 'settings', icon: Settings },
       { section: 'users', icon: UserRound },
       { section: 'shop', icon: PlugZap },
+      { section: 'plugins', icon: Puzzle },
       { section: 'taxonomies', icon: Tags },
       { section: 'sync', icon: GitCompareArrows },
       { section: 'history', icon: History },
@@ -154,13 +159,14 @@ function App({
             onOpenProducts={() => setActiveSection('products')}
           />
         )}
-        {canAccess(activeSection) && activeSection === 'products' && <ProductsPage desktop={desktop} />}
+        {canAccess(activeSection) && activeSection === 'products' && <ProductsPage desktop={desktop} canCreateTerms={canAccess('taxonomies')} />}
         {canAccess(activeSection) && activeSection === 'users' && <UsersPage currentUser={currentUser} />}
         {canAccess(activeSection) && activeSection === 'settings' && <AppearanceSettingsPage />}
         {canAccess(activeSection) && activeSection === 'shop' && <ShopConnectionPage />}
         {canAccess(activeSection) && activeSection === 'taxonomies' && <TaxonomiesPage />}
         {canAccess(activeSection) && activeSection === 'history' && <HistoryPage />}
-        {canAccess(activeSection) && !['dashboard', 'products', 'users', 'settings', 'shop', 'taxonomies', 'history'].includes(activeSection) && (
+        {canAccess(activeSection) && activeSection === 'plugins' && <PluginsPage />}
+        {canAccess(activeSection) && !['dashboard', 'products', 'users', 'settings', 'shop', 'taxonomies', 'history', 'plugins'].includes(activeSection) && (
           <EmptySection title={sectionTitles[activeSection]} />
         )}
       </div>

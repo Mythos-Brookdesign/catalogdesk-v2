@@ -120,6 +120,18 @@ function createAuthenticator(database, {
       await database('recordLogin', user.id)
       return createSession(latestUser)
     },
+    // Development only: Main calls this exclusively for unpackaged apps started with --dev.
+    // Signs in the given user, or the first active admin, without a password.
+    async developmentLogin(username) {
+      const users = await database('listUsers')
+      const candidate = username
+        ? users.find((user) => user.username === String(username).trim().toLowerCase())
+        : users.find((user) => user.role === 'admin')
+      const user = candidate && await database('findUserByUsername', candidate.username)
+      if (!user || !user.active) throw new Error(username ? `Entwicklungs-Login: Benutzer ${username} nicht gefunden.` : 'Entwicklungs-Login: Kein aktiver Admin vorhanden.')
+      await database('recordLogin', user.id)
+      return createSession(user)
+    },
     logout(token) {
       sessions.delete(token)
       return true
@@ -133,7 +145,7 @@ function createAuthenticator(database, {
       if (actor.role !== 'admin') throw new Error('Nur Administratoren duerfen Benutzer verwalten.')
       const parsed = profileSchema.omit({ password: true }).extend({
         id: z.string().uuid().optional(), role: z.enum(['admin', 'employee']),
-        permissions: z.array(z.enum(['dashboard', 'products', 'orders', 'customers', 'settings', 'users', 'shop', 'taxonomies', 'sync', 'history'])).max(10),
+        permissions: z.array(z.enum(['dashboard', 'products', 'orders', 'customers', 'settings', 'users', 'shop', 'taxonomies', 'sync', 'history', 'plugins'])).max(11),
         password: passwordSchema.optional(),
       }).strict().parse(payload)
       const { password, ...profile } = parsed

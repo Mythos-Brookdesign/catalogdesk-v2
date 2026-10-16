@@ -73,34 +73,40 @@ it('detects modules for shops imported before modules existed', () => {
   finally { database.close() }
 })
 
-it('switches modules on and off per shop without a new import', () => {
+it('hides what a switched-off module owns without a new import and keeps the data', () => {
   const directory = mkdtempSync(path.join(os.tmpdir(), 'catalogdesk-v2-modules-toggle-'))
   directories.push(directory)
   const database = databaseModule.openDatabase(path.join(directory, 'catalogdesk-v2.sqlite'))
+  const term = (id, name) => ({ id, name, slug: name.toLowerCase(), parentId: 0, count: 0, menuOrder: 0, payload: {} })
   const importNow = (detected) => database.replaceTaxonomies({ shopUrl, importedAt: new Date().toISOString(), modules: detected,
     taxonomies: [
-      { taxonomy: 'product_unit', kind: 'custom', label: 'Unit', labelSource: 'generated', route: 'wc/v3/products/units', hierarchical: false, available: true, attribute: null, terms: [] },
-      { taxonomy: 'product_manufacturer', kind: 'custom', label: 'Marken-Hersteller', labelSource: 'wordpress', route: 'wc/v3/products/manufacturers', hierarchical: false, available: true, attribute: null, terms: [] },
+      { taxonomy: 'product_unit', kind: 'custom', label: 'Unit', labelSource: 'generated', route: 'wc/v3/products/units', hierarchical: false, available: true, attribute: null, terms: [term(60, 'kg')] },
+      { taxonomy: 'product_season', kind: 'custom', label: 'Saison', labelSource: 'wordpress', route: 'wc/v3/products/seasons', hierarchical: false, available: true, attribute: null, terms: [term(70, 'Sommer')] },
     ],
-    productFields: [{ scope: 'product', field: 'unit', multiple: false }] })
+    productFields: [{ scope: 'product', field: 'unit', multiple: false }, { scope: 'product', field: 'season', multiple: false }] })
   const labels = () => database.taxonomyOverview({ shopUrl }).taxonomies.map((entry) => entry.label)
-  const section = () => database.productEditorOptions({ shopUrl }).termFields.map((field) => [field.label, field.section])
+  const fields = () => database.productEditorOptions({ shopUrl }).termFields.map((field) => [field.label, field.section]).sort((a, b) => a[0].localeCompare(b[0]))
   try {
     importNow(['germanized'])
-    database.replaceCatalog({ shopUrl, importedAt: new Date().toISOString(), products: [{ id: 1, parentId: null, type: 'simple', sku: 'A', name: 'A', status: 'publish', payload: {}, terms: [] }] })
-    // Module labels replace generated names only; the shop's own WordPress label stays.
-    expect(labels()).toEqual(['Einheiten', 'Marken-Hersteller'])
-    expect(section()).toEqual([['Einheit', 'Germanized']])
+    database.replaceCatalog({ shopUrl, importedAt: new Date().toISOString(), products: [{ id: 1, parentId: null, type: 'simple', sku: 'A', name: 'A', status: 'publish', payload: {},
+      terms: [{ field: 'unit', id: 60, name: 'kg', slug: 'kg' }, { field: 'season', id: 70, name: 'Sommer', slug: 'sommer' }] }] })
+    expect(labels()).toEqual(['Einheiten', 'Saison'])
+    expect(fields()).toEqual([['Einheit', 'Germanized'], ['Saison', null]])
 
     expect(database.setModuleEnabled({ shopUrl, moduleId: 'germanized', enabled: false })).toMatchObject({ detected: true, enabled: false, active: false })
-    expect(labels()).toEqual(['Unit', 'Marken-Hersteller'])
-    expect(section()).toEqual([['Unit', null]])
-    // The choice survives a new import.
+    // Everything Germanized owns is hidden; plugin data no module owns stays visible.
+    expect(labels()).toEqual(['Saison'])
+    expect(fields()).toEqual([['Saison', null]])
+    expect(database.listTaxonomyTerms({ shopUrl, taxonomy: 'product_unit' }).total).toBe(0)
+    expect(database.listProducts().products[0].terms.map((entry) => entry.name)).toEqual(['Sommer'])
+    expect(() => database.queueTaxonomyChange({ shopUrl, taxonomy: 'product_unit', operation: 'create', fields: { name: 'g', slug: '', parent: 0, description: '' } })).toThrow('Plugin-Modul ist ausgeschaltet')
+    expect(() => database.queueProductChange({ shopUrl, productId: 1, values: {}, terms: { unit: 60 } })).toThrow('kann nicht bearbeitet werden')
+    // The choice survives a new import, and the data is back when the module is switched on.
     importNow(['germanized'])
-    expect(labels()).toEqual(['Unit', 'Marken-Hersteller'])
-
+    expect(labels()).toEqual(['Saison'])
     database.setModuleEnabled({ shopUrl, moduleId: 'germanized', enabled: true })
-    expect(labels()).toEqual(['Einheiten', 'Marken-Hersteller'])
+    expect(labels()).toEqual(['Einheiten', 'Saison'])
+    expect(database.listTaxonomyTerms({ shopUrl, taxonomy: 'product_unit' }).total).toBe(1)
     importNow([])
     expect(() => database.setModuleEnabled({ shopUrl, moduleId: 'germanized', enabled: true })).toThrow('nicht erkannt')
   } finally { database.close() }

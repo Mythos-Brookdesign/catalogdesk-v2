@@ -7,7 +7,7 @@ import './UsersPage.css'
 const sections: [MenuSection, string][] = [
   ['dashboard', 'Dashboard'], ['products', 'Produkte'], ['orders', 'Bestellungen'],
   ['customers', 'Kunden'], ['settings', 'Einstellungen'], ['users', 'Benutzer'],
-  ['shop', 'Shopverbindung'], ['taxonomies', 'Taxonomien'], ['sync', 'Synchronisation'], ['history', 'Historie'],
+  ['shop', 'Shopverbindung'], ['plugins', 'Plugins'], ['taxonomies', 'Taxonomien'], ['sync', 'Synchronisation'], ['history', 'Historie'],
 ]
 const emptyUser: UserInput = { firstName: '', lastName: '', email: '', username: '', password: '', role: 'employee', permissions: ['dashboard'] }
 

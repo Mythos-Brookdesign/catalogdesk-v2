@@ -1,8 +1,8 @@
 import { useCallback, useEffect, useState } from 'react'
 import { Boxes, ChevronDown, ChevronLeft, ChevronRight, CloudOff, DownloadCloud, LoaderCircle, Pencil, RefreshCw, Search, SlidersHorizontal, Undo2, X } from 'lucide-react'
 import { productFieldLabels, productPrice, productFieldValue, productStatusLabels, productStock, productTypeLabels, type ProductPage, type ProductSummary } from './model'
-import type { ProductChangeResult, ProductEditorOptions, ProductImportProgress, WorkspaceSummary } from '../../types/desktop'
-import { ProductEditor } from './ProductEditor'
+import type { ProductChangeResult, ProductEditorOptions, ProductImportProgress, ProductTermField, TaxonomyTermOption, WorkspaceSummary } from '../../types/desktop'
+import { ProductEditor, type NewTerm } from './ProductEditor'
 import { useNotify } from '../../components/notifications/notifications'
 import './ProductsPage.css'
 
@@ -17,7 +17,7 @@ function Price({ product, currency }: { product: ProductSummary; currency?: stri
 }
 const pageSize = 50
 
-export function ProductsPage({ desktop }: { desktop?: DesktopApi }) {
+export function ProductsPage({ desktop, canCreateTerms = false }: { desktop?: DesktopApi; canCreateTerms?: boolean }) {
   const [summary, setSummary] = useState<WorkspaceSummary | null>(null)
   const [page, setPage] = useState<ProductPage | null>(null)
   const [pageIndex, setPageIndex] = useState(0)
@@ -117,6 +117,21 @@ export function ProductsPage({ desktop }: { desktop?: DesktopApi }) {
       setEditing(null)
     } catch (reason) { setFormError(reason instanceof Error ? reason.message : 'Speichern fehlgeschlagen.') }
     finally { setBusy(false); reload() }
+  }
+
+  // Creates a term from the product editor through the same queue as the taxonomy page (checks, offline, history).
+  async function createTerm(field: ProductTermField, term: NewTerm): Promise<TaxonomyTermOption> {
+    if (!desktop) throw new Error('Nur in der Desktop-App verfuegbar.')
+    const result = await desktop.changeTaxonomyTerm({ taxonomy: field.taxonomy, operation: 'create', fields: { name: term.name, slug: '', parent: field.hierarchical ? term.parent : 0, description: '' } })
+    if (!result.ok) throw new Error(result.error)
+    const parent = field.terms.find((entry) => entry.id === term.parent)
+    const created: TaxonomyTermOption = { id: result.value.termId, name: term.name, slug: '', path: parent ? `${parent.path} › ${term.name}` : term.name, depth: parent ? parent.depth + 1 : 0 }
+    // Every field of the same taxonomy (e.g. both price labels) offers the new term right away.
+    setEditorOptions((current) => current && { ...current, termFields: current.termFields.map((entry) => entry.taxonomy === field.taxonomy ? { ...entry, terms: [...entry.terms, created] } : entry) })
+    const synced = result.value.sync && !result.value.sync.offline && result.value.termId > 0
+    if (synced) notify.success('Begriff angelegt', { message: `„${term.name}“ wurde in ${field.label} im Shop angelegt.`, key: 'product-term' })
+    else notify.warning('Begriff lokal angelegt', { message: `„${term.name}“ wird in ${field.label} uebertragen, sobald der Shop erreichbar ist. Das Produkt folgt danach.`, key: 'product-term' })
+    return created
   }
 
   async function discard(product: ProductSummary) {
@@ -275,7 +290,7 @@ export function ProductsPage({ desktop }: { desktop?: DesktopApi }) {
             .map(([label, names]) => <div key={label} className="product-inspector-term"><dt>{label}</dt><dd>{names.join(', ')}</dd></div>)}
         </dl>
       </aside>}
-      {editing && editorOptions && <ProductEditor product={editing} options={editorOptions} busy={busy} error={formError} onCancel={() => setEditing(null)} onSave={(values, terms) => void save(values, terms)} />}
+      {editing && editorOptions && <ProductEditor product={editing} options={editorOptions} busy={busy} error={formError} onCancel={() => setEditing(null)} onSave={(values, terms) => void save(values, terms)} onCreateTerm={canCreateTerms ? createTerm : undefined} />}
       <footer className="products-footer">
         <span>Lokaler Arbeitsbereich</span>
         <span className="products-pager">

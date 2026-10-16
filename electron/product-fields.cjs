@@ -26,8 +26,9 @@ const isTerm = (value) => value && typeof value === 'object' && !Array.isArray(v
 // Canonical form for comparisons: shop and app format numbers, empty values and term objects differently.
 function normalize(value) {
   if (value === null || value === undefined || value === '') return ''
-  if (isTermList(value)) return value.map((entry) => Number(entry.id)).filter((id) => id > 0).sort((a, b) => a - b).join(',')
-  if (isTerm(value)) return Number(value.id) > 0 ? String(Number(value.id)) : ''
+  // Negative IDs are terms created offline and count like real ones; 0 means "no term".
+  if (isTermList(value)) return value.map((entry) => Number(entry.id)).filter((id) => Number.isFinite(id) && id !== 0).sort((a, b) => a - b).join(',')
+  if (isTerm(value)) return Number(value.id) ? String(Number(value.id)) : ''
   if (typeof value === 'object') return Object.keys(value).sort().map((key) => `${key}=${normalize(value[key])}`).join(';')
   if (typeof value === 'boolean') return value ? 'true' : 'false'
   const text = String(value).trim()

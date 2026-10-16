@@ -113,3 +113,36 @@ it('reports fields the shop ignores and shop rejections', async () => {
     expect(database.discardProductChange({ shopUrl, productId: 60 })).toEqual({ name: 'Hoodie', fields: ['delivery_time'] })
   } finally { database.close() }
 })
+
+it('assigns a term created offline and sends the product once the shop created the term', async () => {
+  const { database, call } = setup()
+  const taxonomySync = (await import('./taxonomy-sync.cjs')).default
+  try {
+    const { termId } = database.queueTaxonomyChange({ shopUrl, taxonomy: 'product_cat', operation: 'create', fields: { name: 'Winter', slug: '', parent: 0, description: '' } })
+    expect(termId).toBeLessThan(0)
+    expect(database.productEditorOptions({ shopUrl }).termFields[0].terms.map((term) => term.name)).toContain('Winter')
+    database.queueProductChange({ shopUrl, productId: 60, values: {}, terms: { categories: [4, termId] } })
+    expect(database.listProducts({ query: 'HOOD' }).products[0].payload.categories.map((term) => term.name)).toEqual(['Kleidung', 'Winter'])
+
+    let shop = clone(hoodie)
+    const requests = []
+    const fetcher = vi.fn(async (url, options) => {
+      const { pathname } = new URL(url)
+      requests.push([options.method, pathname, options.body ? JSON.parse(options.body) : null])
+      if (pathname.endsWith('/product_cat') && options.method === 'POST') return json({ id: 90, ...JSON.parse(options.body), slug: 'winter', parent: 0, count: 0 }, 201)
+      if (options.method === 'PUT') { shop = { ...shop, categories: JSON.parse(options.body).categories.map(({ id }) => ({ id, name: id === 90 ? 'Winter' : 'Kleidung', slug: '' })) }; return json(shop) }
+      return json(shop)
+    })
+    // The product waits while its new term has not reached the shop.
+    expect(await productSync.syncProductChanges(connection, call, fetcher)).toMatchObject({ synced: 0, counts: { pending: 1 } })
+    await taxonomySync.syncTaxonomyChanges(connection, call, fetcher)
+    expect(await productSync.syncProductChanges(connection, call, fetcher)).toMatchObject({ synced: 1, counts: { pending: 0 } })
+    expect(requests.find(([method]) => method === 'PUT')[2]).toEqual({ categories: [{ id: 4 }, { id: 90 }] })
+
+    // Dropping a pending term removes it from waiting product edits.
+    const { termId: other } = database.queueTaxonomyChange({ shopUrl, taxonomy: 'product_cat', operation: 'create', fields: { name: 'Fruehling', slug: '', parent: 0, description: '' } })
+    database.queueProductChange({ shopUrl, productId: 70, values: {}, terms: { categories: [other] } })
+    database.discardTaxonomyChange({ shopUrl, taxonomy: 'product_cat', termId: other })
+    expect(database.listProducts({ query: 'SOCK' }).products[0].changes).toEqual({ categories: [] })
+  } finally { database.close() }
+})

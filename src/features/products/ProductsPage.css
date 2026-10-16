@@ -81,3 +81,10 @@
 .price-range { white-space: nowrap; }
 .price-empty { color: var(--muted); }
 .product-price { font-variant-numeric: tabular-nums; }
+.term-field-label { display: inline-flex; align-items: center; gap: 6px; }
+.term-single { display: grid; gap: 6px; }
+.term-single .term-field-label { font-size: 12px; color: var(--muted); }
+.term-add { width: 22px; height: 22px; display: inline-grid; color: var(--accent); }
+.term-add:hover { background: var(--surface-hover); }
+.term-layer-backdrop { z-index: 20; }
+.term-layer { width: min(100%, 420px); }

@@ -250,7 +250,8 @@ app.whenReady().then(async () => {
           shop: result ? (result.outcome === 'success' ? 'Im Shop gespeichert' : `Vom Shop abgelehnt: ${result.error}`) : 'Lokal vorgemerkt, wird spaeter uebertragen',
         },
       })
-      return { ok: true, value: { termId: value.termId, sync } }
+      // After an immediate sync the created term has its real shop ID.
+      return { ok: true, value: { termId: result?.outcome === 'success' && result.termId ? result.termId : value.termId, sync } }
     } catch (error) {
       const message = safeTaxonomyError(error) ? error.message : 'Aenderung konnte nicht gespeichert werden. Eingaben pruefen.'
       if (user) void audit(user, { category: 'taxonomies', action: `taxonomies.term_${['create', 'update', 'delete'].includes(request.operation) ? request.operation : 'change'}`, summary: `Begriff ${request.fields?.name ? `„${String(request.fields.name).slice(0, 200)}“ ` : ''}nicht gespeichert`, outcome: 'failure', targetType: typeof request.taxonomy === 'string' ? request.taxonomy.slice(0, 80) : null, details: { error: message } })
@@ -325,7 +326,7 @@ app.whenReady().then(async () => {
   }
   ipcMain.handle('catalog:v2:modules-list', async (event, envelope) => {
     try {
-      authorize(event, envelope, 'shop')
+      authorize(event, envelope, 'plugins')
       const shopUrl = (await shopStore.summary().catch(() => null))?.url
       return { ok: true, value: await databaseCall('listModules', shopUrl ? { shopUrl } : {}) }
     } catch (error) {
@@ -335,7 +336,7 @@ app.whenReady().then(async () => {
   ipcMain.handle('catalog:v2:modules-set', async (event, envelope) => {
     let user = null
     try {
-      const authorized = authorize(event, envelope, 'shop')
+      const authorized = authorize(event, envelope, 'plugins')
       user = authorized.user
       const shopUrl = await currentShopUrl()
       const value = await databaseCall('setModuleEnabled', { shopUrl, moduleId: authorized.payload?.moduleId, enabled: authorized.payload?.enabled })
@@ -383,6 +384,20 @@ app.whenReady().then(async () => {
     } catch (error) {
       const attempted = typeof payload?.username === 'string' ? payload.username.trim().slice(0, 64) : null
       void audit(null, { category: 'auth', action: 'auth.login_failed', source: 'user', username: attempted, summary: `Anmeldung fehlgeschlagen${attempted ? ` fuer „${attempted}“` : ''}`, outcome: 'failure', targetType: 'user', targetLabel: attempted, details: { reason: error.message } })
+      return { ok: false, error: error.message }
+    }
+  })
+  // Automatic sign-in for `npm run dev` (unpackaged app with --dev). Never available in a packaged app.
+  // CATALOGDESK_V2_DEV_LOGIN=0 turns it off, CATALOGDESK_V2_DEV_USER selects the user (default: first admin).
+  const developmentLogin = development && process.env.CATALOGDESK_V2_DEV_LOGIN !== '0'
+  ipcMain.handle('catalog:v2:auth-dev', async (event) => {
+    validateSender(event)
+    if (!developmentLogin || app.isPackaged) return { ok: false, error: 'Nicht verfuegbar.' }
+    try {
+      const result = await authenticator.developmentLogin(process.env.CATALOGDESK_V2_DEV_USER)
+      void audit(result.user, { category: 'auth', action: 'auth.login', summary: 'Angemeldet (Entwicklungsmodus)', targetType: 'user', targetId: result.user.id, targetLabel: result.user.username, details: { method: 'Automatische Anmeldung ohne Passwort (npm run dev)' } })
+      return { ok: true, ...result }
+    } catch (error) {
       return { ok: false, error: error.message }
     }
   })

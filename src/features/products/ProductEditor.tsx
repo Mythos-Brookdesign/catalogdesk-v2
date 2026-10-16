@@ -1,6 +1,7 @@
 import { useMemo, useState } from 'react'
-import { LoaderCircle, Save, Search, X } from 'lucide-react'
-import type { LocalProduct as ProductSummary, ProductEditorOptions, ProductTermField } from '../../types/desktop'
+import { LoaderCircle, Plus, Save, Search, X } from 'lucide-react'
+import type { LocalProduct as ProductSummary, ProductEditorOptions, ProductTermField, TaxonomyTermOption } from '../../types/desktop'
+import { findDuplicate } from '../taxonomies/termNames'
 import { productTypeLabels } from './model'
 
 type Values = {
@@ -28,17 +29,58 @@ function initialValues(payload: Record<string, unknown>): Values {
   }
 }
 
-function TermPicker({ field, selected, onChange }: { field: ProductTermField; selected: number[]; onChange: (ids: number[]) => void }) {
+export type NewTerm = { name: string; parent: number }
+
+// Small layer above the editor: creates a term in the field's taxonomy right away (like on the taxonomy page).
+function NewTermLayer({ field, onCancel, onCreate }: { field: ProductTermField; onCancel: () => void; onCreate: (term: NewTerm) => Promise<void> }) {
+  const [name, setName] = useState('')
+  const [parent, setParent] = useState(0)
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState('')
+  const duplicate = findDuplicate(field.terms, name)
+  async function submit(event: React.FormEvent) {
+    event.preventDefault()
+    event.stopPropagation()
+    if (busy || duplicate || !name.trim()) return
+    setBusy(true); setError('')
+    try { await onCreate({ name: name.trim(), parent }) }
+    catch (reason) { setError(reason instanceof Error ? reason.message : 'Begriff konnte nicht angelegt werden.'); setBusy(false) }
+  }
+  return <div className="taxonomy-modal-backdrop term-layer-backdrop"><section className="taxonomy-modal term-layer" role="dialog" aria-modal="true" aria-labelledby="new-term-title">
+    <header><h2 id="new-term-title">Neuer Begriff: {field.label}</h2><button type="button" className="icon-button" aria-label="Schliessen" disabled={busy} onClick={onCancel}><X size={18} /></button></header>
+    <form onSubmit={(event) => void submit(event)}>
+      <fieldset disabled={busy}>
+        <label className="auth-field"><span>Name</span><input required maxLength={200} autoFocus aria-invalid={Boolean(duplicate)} value={name} onChange={(event) => setName(event.target.value)} /></label>
+        {duplicate && <p className="auth-error" role="alert">Ein Begriff „{duplicate.name}“ existiert in {field.label} bereits.</p>}
+        {field.hierarchical && <label className="auth-field"><span>Uebergeordneter Begriff</span><select value={parent} onChange={(event) => setParent(Number(event.target.value))}>
+          <option value={0}>Keiner (oberste Ebene)</option>
+          {field.terms.map((term) => <option key={term.id} value={term.id}>{'\u00a0\u00a0'.repeat(term.depth)}{term.name}</option>)}
+        </select></label>}
+        <p className="taxonomy-hint">Der Begriff wird sofort in der Taxonomie angelegt und diesem Produkt zugeordnet.</p>
+      </fieldset>
+      {error && <p className="auth-error" role="alert">{error}</p>}
+      <footer><button type="button" className="button" disabled={busy} onClick={onCancel}>Abbrechen</button><button className="button primary" disabled={busy || !name.trim() || Boolean(duplicate)}>{busy ? <LoaderCircle className="spin" size={16} /> : <Plus size={16} />}Anlegen</button></footer>
+    </form>
+  </section></div>
+}
+
+function AddTermButton({ field, onAdd }: { field: ProductTermField; onAdd?: () => void }) {
+  if (!onAdd) return null
+  return <button type="button" className="icon-button term-add" aria-label={`Neuer Begriff: ${field.label}`} title={`Neuen Begriff in ${field.label} anlegen`} onClick={onAdd}><Plus size={14} /></button>
+}
+
+function TermPicker({ field, selected, onChange, onAdd }: { field: ProductTermField; selected: number[]; onChange: (ids: number[]) => void; onAdd?: () => void }) {
   const [filter, setFilter] = useState('')
   const visible = field.terms.filter((term) => !filter || term.path.toLowerCase().includes(filter.toLowerCase()))
-  if (!field.multiple) return <label className="auth-field"><span>{field.label}</span>
-    <select value={selected[0] ?? 0} onChange={(event) => onChange(Number(event.target.value) ? [Number(event.target.value)] : [])}>
+  if (!field.multiple) return <div className="auth-field term-single">
+    <span className="term-field-label"><label htmlFor={`term-${field.scope}-${field.field}`}>{field.label}</label><AddTermButton field={field} onAdd={onAdd} /></span>
+    <select id={`term-${field.scope}-${field.field}`} value={selected[0] ?? 0} onChange={(event) => onChange(Number(event.target.value) ? [Number(event.target.value)] : [])}>
       <option value={0}>— keine —</option>
-      {field.terms.map((term) => <option key={term.id} value={term.id}>{'  '.repeat(term.depth)}{term.name}</option>)}
+      {field.terms.map((term) => <option key={term.id} value={term.id}>{'\u00a0\u00a0'.repeat(term.depth)}{term.name}</option>)}
     </select>
-  </label>
+  </div>
   return <fieldset className="product-term-picker">
-    <legend>{field.label}{selected.length ? ` (${selected.length})` : ''}</legend>
+    <legend><span className="term-field-label">{field.label}{selected.length ? ` (${selected.length})` : ''}<AddTermButton field={field} onAdd={onAdd} /></span></legend>
     {field.terms.length > 12 && <label className="search-box"><Search size={14} /><input aria-label={`${field.label} filtern`} placeholder="Filtern" value={filter} onChange={(event) => setFilter(event.target.value)} /></label>}
     <div className="product-term-options">
       {visible.map((term) => <label key={term.id} style={{ paddingLeft: filter ? 0 : term.depth * 16 }}>
@@ -50,14 +92,17 @@ function TermPicker({ field, selected, onChange }: { field: ProductTermField; se
   </fieldset>
 }
 
-export function ProductEditor({ product, options, busy, error, onCancel, onSave }: {
+export function ProductEditor({ product, options, busy, error, onCancel, onSave, onCreateTerm }: {
   product: ProductSummary
   options: ProductEditorOptions
   busy: boolean
   error: string
   onCancel: () => void
   onSave: (values: Record<string, unknown>, terms: Record<string, number[] | number>) => void
+  // Missing when the user may not edit taxonomies.
+  onCreateTerm?: (field: ProductTermField, term: NewTerm) => Promise<TaxonomyTermOption>
 }) {
+  const [addingTo, setAddingTo] = useState<ProductTermField | null>(null)
   const variation = product.parentId !== null
   const initial = useMemo(() => initialValues(product.payload), [product])
   const termFields = options.termFields.filter((field) => field.scope === (variation ? 'variation' : 'product'))
@@ -139,12 +184,19 @@ export function ProductEditor({ product, options, busy, error, onCancel, onSave 
         {[...new Set(termFields.map((field) => field.section))].sort((a, b) => (a === null ? -1 : b === null ? 1 : a.localeCompare(b))).map((section) => <section key={section ?? 'core'} className="product-editor-section" aria-label={section ?? 'Zuordnungen'}>
           <h3>{section ?? 'Zuordnungen'}</h3>
           <div className="product-editor-terms">
-            {termFields.filter((field) => field.section === section).map((field) => <TermPicker key={field.field} field={field} selected={terms[field.field] ?? []} onChange={(ids) => setTerms({ ...terms, [field.field]: ids })} />)}
+            {termFields.filter((field) => field.section === section).map((field) => <TermPicker key={field.field} field={field} selected={terms[field.field] ?? []} onChange={(ids) => setTerms({ ...terms, [field.field]: ids })}
+              onAdd={onCreateTerm && field.editable ? () => setAddingTo(field) : undefined} />)}
           </div>
         </section>)}
       </fieldset>
       {error && <p className="auth-error" role="alert">{error}</p>}
       <footer><button className="button" type="button" disabled={busy} onClick={onCancel}>Abbrechen</button><button className="button primary" disabled={busy || (!variation && !values.name.trim())}>{busy ? <LoaderCircle className="spin" size={16} /> : <Save size={16} />}Speichern</button></footer>
     </form>
+      {addingTo && onCreateTerm && <NewTermLayer field={addingTo} onCancel={() => setAddingTo(null)} onCreate={async (term) => {
+        const created = await onCreateTerm(addingTo, term)
+        // Select the new term: added to a list, or replacing the single value.
+        setTerms((current) => ({ ...current, [addingTo.field]: addingTo.multiple ? [...(current[addingTo.field] ?? []), created.id] : [created.id] }))
+        setAddingTo(null)
+      }} />}
   </section></div>
 }

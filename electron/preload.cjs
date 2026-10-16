@@ -51,6 +51,7 @@ contextBridge.exposeInMainWorld('catalogDesk', {
   authState: () => ipcRenderer.invoke('catalog:v2:auth-state', sessionToken),
   bootstrapAdmin: (profile) => authenticate('catalog:v2:auth-bootstrap', profile),
   login: (credentials) => authenticate('catalog:v2:auth-login', credentials),
+  developmentLogin: () => authenticate('catalog:v2:auth-dev'),
   logout: async () => {
     const current = sessionToken
     sessionToken = null

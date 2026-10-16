@@ -33,7 +33,8 @@ async function mockWooCommerce(application: ElectronApplication, key: string, se
         if (options.method === 'PUT') {
           const body = JSON.parse(String(options.body))
           const terms: Record<number, { id: number; name: string; slug: string }> = { 4: { id: 4, name: 'Kleidung &amp; Mode', slug: 'kleidung' }, 5: { id: 5, name: 'Shirts', slug: 'shirts' }, 12: { id: 12, name: '2-3 Werktage', slug: '2-3-werktage' } }
-          for (const [field, value] of Object.entries(body)) product[field] = Array.isArray(value) ? value.map((entry: { id: number }) => terms[entry.id]) : value && typeof value === 'object' && 'id' in value ? terms[(value as { id: number }).id] : value
+          const lookup = (id: number) => terms[id] ?? { id, name: `#${id}`, slug: `term-${id}` }
+          for (const [field, value] of Object.entries(body)) product[field] = Array.isArray(value) ? value.map((entry: { id: number }) => lookup(entry.id)) : value && typeof value === 'object' && 'id' in value ? ((value as { id: number }).id ? lookup((value as { id: number }).id) : undefined) : value
           if ('regular_price' in body) product.price = body.regular_price
         } else if (options.method !== 'GET') throw new Error('Unexpected shop request')
         return json(product)
@@ -226,7 +227,12 @@ test('creates the first admin before showing the app and requires login on the n
 
     await page.getByRole('button', { name: 'Begriff hinzufuegen', exact: true }).click()
     let termDialog = page.getByRole('dialog')
+    // A term exists only once per taxonomy (ignoring case), checked while typing.
+    await termDialog.getByLabel('Name', { exact: true }).fill('kleidung & mode')
+    await expect(termDialog.getByRole('alert')).toHaveText('Ein Begriff „Kleidung & Mode“ existiert in Kategorien bereits.')
+    await expect(termDialog.getByRole('button', { name: 'Speichern', exact: true })).toBeDisabled()
     await termDialog.getByLabel('Name', { exact: true }).fill('Hosen')
+    await expect(termDialog.getByRole('alert')).toHaveCount(0)
     await termDialog.getByLabel('Uebergeordneter Begriff').selectOption({ label: 'Kleidung & Mode' })
     await page.screenshot({ path: testInfo.outputPath('taxonomy-term-form.png') })
     await termDialog.getByRole('button', { name: 'Speichern', exact: true }).click()
@@ -282,13 +288,24 @@ test('creates the first admin before showing the app and requires login on the n
     let editor = page.getByRole('dialog')
     await editor.getByLabel('Name', { exact: true }).fill('Hoodie Classic')
     await editor.getByRole('group', { name: /Kategorien/ }).getByLabel('Shirts').check()
+    await editor.getByRole('button', { name: 'Neuer Begriff: Kategorien' }).click()
+    const termLayer = page.getByRole('dialog', { name: 'Neuer Begriff: Kategorien' })
+    await termLayer.getByLabel('Name', { exact: true }).fill('shirts')
+    await expect(termLayer.getByRole('alert')).toContainText('„Shirts“ existiert in Kategorien bereits')
+    await expect(termLayer.getByRole('button', { name: 'Anlegen' })).toBeDisabled()
+    await termLayer.getByLabel('Name', { exact: true }).fill('Winter')
+    await page.screenshot({ path: testInfo.outputPath('product-new-term.png') })
+    await termLayer.getByRole('button', { name: 'Anlegen' }).click()
+    await expect(page.getByRole('status').filter({ hasText: 'Begriff angelegt' })).toContainText('„Winter“ wurde in Kategorien im Shop angelegt.')
+    await expect(termLayer).toHaveCount(0)
+    await expect(editor.getByRole('group', { name: /Kategorien/ }).getByLabel('Winter')).toBeChecked()
     await expect(editor.getByRole('region', { name: 'Germanized' })).toBeVisible()
-    await editor.getByRole('region', { name: 'Germanized' }).getByLabel('Lieferzeit').selectOption({ label: '— keine —' })
+    await editor.getByRole('region', { name: 'Germanized' }).getByLabel('Lieferzeit', { exact: true }).selectOption({ label: '— keine —' })
     await page.screenshot({ path: testInfo.outputPath('product-editor.png') })
     await editor.getByRole('button', { name: 'Speichern', exact: true }).click()
     await expect(page.getByRole('status').filter({ hasText: 'Im Shop gespeichert' })).toContainText('„Hoodie Classic“ wurde uebertragen.')
     await expect(productRows.first()).toContainText('Hoodie Classic')
-    await expect(inspector).toContainText('Kleidung & Mode, Shirts')
+    await expect(inspector).toContainText('Kleidung & Mode, Shirts, Winter')
     expect(await application.evaluate(() => (globalThis as unknown as { catalogProducts: Record<number, { delivery_time: unknown }> }).catalogProducts[60].delivery_time)).toBeUndefined()
 
     await application.evaluate(() => { (globalThis as { catalogOffline?: boolean }).catalogOffline = true })
@@ -369,7 +386,7 @@ test('creates the first admin before showing the app and requires login on the n
     await page.getByRole('button', { name: 'Anmelden', exact: true }).click()
     await expect(page.getByRole('heading', { name: 'Produkte', exact: true })).toBeVisible()
     await expect(page.getByRole('button', { name: 'Produkte', exact: true })).toBeVisible()
-    for (const title of ['Dashboard', 'Benutzer', 'Bestellungen', 'Kunden', 'Einstellungen', 'Shopverbindung', 'Taxonomien', 'Synchronisation', 'Historie']) {
+    for (const title of ['Dashboard', 'Benutzer', 'Bestellungen', 'Kunden', 'Einstellungen', 'Shopverbindung', 'Plugins', 'Taxonomien', 'Synchronisation', 'Historie']) {
       await expect(page.getByRole('button', { name: title, exact: true })).toHaveCount(0)
     }
     await expect(page.getByText('EINSTELLUNGEN', { exact: true })).toHaveCount(0)
@@ -383,6 +400,7 @@ test('creates the first admin before showing the app and requires login on the n
     expect(await page.evaluate(() => window.catalogDesk!.deleteShopConnection())).toMatchObject({ ok: false })
     expect(await page.evaluate(() => window.catalogDesk!.importTaxonomies())).toMatchObject({ ok: false, error: expect.stringContaining('Benutzerrolle') })
     expect(await page.evaluate(() => window.catalogDesk!.listAudit({}))).toMatchObject({ ok: false, error: expect.stringContaining('Benutzerrolle') })
+    expect(await page.evaluate(() => window.catalogDesk!.listModules())).toMatchObject({ ok: false, error: expect.stringContaining('Benutzerrolle') })
     expect(await page.evaluate(() => window.catalogDesk!.changeTaxonomyTerm({ taxonomy: 'product_cat', operation: 'delete', termId: 4 }))).toMatchObject({ ok: false, error: expect.stringContaining('Benutzerrolle') })
     expect(await page.evaluate(() => window.catalogDesk!.taxonomyOverview())).toMatchObject({ ok: false })
     await page.getByRole('button', { name: 'Abmelden', exact: true }).click()
@@ -394,6 +412,9 @@ test('creates the first admin before showing the app and requires login on the n
     await expect(page.getByRole('button', { name: 'Bearbeiten: grace' })).toHaveCount(0)
     await page.getByRole('button', { name: 'Shopverbindung', exact: true }).click()
     await expect(page.getByLabel('Shopadresse (HTTPS)')).toHaveValue('https://shop.example/')
+    await expect(page.getByRole('region', { name: 'Plugin-Module' })).toHaveCount(0)
+    await page.getByRole('button', { name: 'Plugins', exact: true }).click()
+    await expect(page.getByRole('heading', { name: 'Plugins', exact: true })).toBeVisible()
     const moduleList = page.getByRole('region', { name: 'Plugin-Module' })
     await expect(moduleList.getByRole('listitem').filter({ hasText: 'Germanized' })).toContainText('Aktiv')
     const germanizedSwitch = moduleList.getByRole('switch', { name: 'Modul Germanized' })
@@ -403,11 +424,13 @@ test('creates the first admin before showing the app and requires login on the n
     await expect(moduleList.getByRole('listitem').filter({ hasText: 'Germanized' })).toContainText('Ausgeschaltet')
     await expect(germanizedSwitch).toHaveAttribute('aria-checked', 'false')
     await page.waitForTimeout(400)
-    await page.screenshot({ path: testInfo.outputPath('shop-modules.png') })
+    await page.screenshot({ path: testInfo.outputPath('plugins.png') })
     const taxonomyNavigation = page.getByRole('navigation', { name: 'Taxonomien' })
     await page.getByRole('button', { name: 'Taxonomien', exact: true }).click()
-    await expect(taxonomyNavigation.getByRole('button', { name: /Delivery time/ })).toBeVisible()
-    await page.getByRole('button', { name: 'Shopverbindung', exact: true }).click()
+    await expect(taxonomyNavigation.getByRole('button', { name: /Kategorien/ })).toBeVisible()
+    await expect(taxonomyNavigation.getByRole('button', { name: /Lieferzeiten|Delivery time/ })).toHaveCount(0)
+    await expect(taxonomyNavigation.getByRole('button', { name: /Materialien/ })).toBeVisible()
+    await page.getByRole('button', { name: 'Plugins', exact: true }).click()
     await moduleList.getByRole('switch', { name: 'Modul Germanized' }).click()
     await expect(moduleList.getByRole('listitem').filter({ hasText: 'Germanized' })).toContainText('Aktiv')
     await page.getByRole('button', { name: 'Taxonomien', exact: true }).click()

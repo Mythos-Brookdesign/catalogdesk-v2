@@ -4,6 +4,7 @@ import type {
   TaxonomyImportProgress, TaxonomyOverview, TaxonomySummary, TaxonomySyncResult, TaxonomyTerm, TaxonomyTermOption, TaxonomyTermPage, TermFields,
 } from '../../types/desktop'
 import { useNotify, type Notify } from '../../components/notifications/notifications'
+import { findDuplicate } from './termNames'
 import './TaxonomiesPage.css'
 
 const pageSize = 100
@@ -36,6 +37,8 @@ export function TaxonomiesPage() {
   const [progress, setProgress] = useState<TaxonomyImportProgress | null>(null)
   const [draft, setDraft] = useState<Draft | null>(null)
   const [options, setOptions] = useState<TaxonomyTermOption[]>([])
+  // All terms of the taxonomy, for the "exists only once" check while typing.
+  const [allTerms, setAllTerms] = useState<TaxonomyTermOption[]>([])
   const [deleting, setDeleting] = useState<TaxonomyTerm | null>(null)
   const [busy, setBusy] = useState(false)
   const [formError, setFormError] = useState('')
@@ -112,10 +115,11 @@ export function TaxonomiesPage() {
     if (!desktop || !current) return
     setFormError('')
     setDraft({ termId: term?.id, fields: { name: term?.name ?? '', slug: term?.slug ?? '', parent: term?.parentId ?? 0, description: term?.description ?? '' } })
-    setOptions([])
-    if (!current.hierarchical) return
+    setOptions([]); setAllTerms([])
     const result = await desktop.taxonomyTermOptions(current.taxonomy)
     if (!result.ok) { setFormError(result.error); return }
+    setAllTerms(result.value)
+    if (!current.hierarchical) return
     // A term cannot become its own descendant: drop it and the subtree that follows it in tree order.
     const index = term ? result.value.findIndex((option) => option.id === term.id) : -1
     if (index < 0) { setOptions(result.value); return }
@@ -159,6 +163,7 @@ export function TaxonomiesPage() {
   function choose(taxonomy: string) { setSelected(taxonomy); setQuery(''); setPage(0) }
 
   const pages = terms ? Math.max(1, Math.ceil(terms.total / terms.pageSize)) : 1
+  const duplicate = draft ? findDuplicate(allTerms, draft.fields.name, draft.fields.slug, draft.termId) : null
   const pending = overview?.pendingChanges ?? 0
   const failed = overview?.failedChanges ?? 0
   return <main className="section-page taxonomies-page">
@@ -245,7 +250,8 @@ export function TaxonomiesPage() {
       <header><h2 id="term-form-title">{draft.termId === undefined ? `${current.label}: Begriff hinzufuegen` : 'Begriff bearbeiten'}</h2><button className="icon-button" aria-label="Schliessen" disabled={busy} onClick={() => setDraft(null)}><X size={18} /></button></header>
       <form onSubmit={save}>
         <fieldset disabled={busy}>
-          <label className="auth-field"><span>Name</span><input required maxLength={200} autoFocus value={draft.fields.name} onChange={(event) => setDraft({ ...draft, fields: { ...draft.fields, name: event.target.value } })} /></label>
+          <label className="auth-field"><span>Name</span><input required maxLength={200} autoFocus aria-invalid={Boolean(duplicate)} aria-describedby={duplicate ? 'term-duplicate' : undefined} value={draft.fields.name} onChange={(event) => setDraft({ ...draft, fields: { ...draft.fields, name: event.target.value } })} /></label>
+          {duplicate && <p id="term-duplicate" className="auth-error" role="alert">Ein Begriff „{duplicate.name}“ existiert in {current.label} bereits.</p>}
           <label className="auth-field"><span>Slug (optional)</span><input maxLength={200} spellCheck={false} placeholder="Wird automatisch aus dem Namen erzeugt" value={draft.fields.slug} onChange={(event) => setDraft({ ...draft, fields: { ...draft.fields, slug: event.target.value } })} /></label>
           {current.hierarchical && <label className="auth-field"><span>Uebergeordneter Begriff</span><select value={draft.fields.parent} onChange={(event) => setDraft({ ...draft, fields: { ...draft.fields, parent: Number(event.target.value) } })}>
             <option value={0}>Keiner (oberste Ebene)</option>
@@ -254,7 +260,7 @@ export function TaxonomiesPage() {
           <label className="auth-field"><span>Beschreibung (optional)</span><textarea rows={4} maxLength={10_000} value={draft.fields.description} onChange={(event) => setDraft({ ...draft, fields: { ...draft.fields, description: event.target.value } })} /></label>
         </fieldset>
         {formError && <p className="auth-error" role="alert">{formError}</p>}
-        <footer><button className="button" type="button" disabled={busy} onClick={() => setDraft(null)}>Abbrechen</button><button className="button primary" disabled={busy || !draft.fields.name.trim()}>{busy ? <LoaderCircle className="spin" size={16} /> : <Save size={16} />}Speichern</button></footer>
+        <footer><button className="button" type="button" disabled={busy} onClick={() => setDraft(null)}>Abbrechen</button><button className="button primary" disabled={busy || !draft.fields.name.trim() || Boolean(duplicate)}>{busy ? <LoaderCircle className="spin" size={16} /> : <Save size={16} />}Speichern</button></footer>
       </form>
     </section></div>}
 

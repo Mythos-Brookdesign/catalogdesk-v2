@@ -41,8 +41,12 @@ it('queues edits offline, shows them merged and validates names, slugs, parents 
       ['Kleidung', 4, 0, 'clean', null], ['Hosen', 'local', 1, 'create', 'pending'], ['Jeans', 'local', 2, 'create', 'pending'], ['T-Shirts', 5, 1, 'update', 'pending'],
     ])
     expect(database.listTaxonomyTerms({ shopUrl, taxonomy: 'product_cat', query: 'T-Shirt' }).terms[0]).toMatchObject({ id: 5, slug: 'shirts' })
-    expect(() => change({ operation: 'create', fields: fields('hosen', 4) })).toThrow('existiert auf dieser Ebene')
-    expect(() => change({ operation: 'create', fields: fields('Neu', 0, 'shirts') })).toThrow('Slug ist bereits vergeben')
+    // A term exists only once per taxonomy: name ignoring case/spaces, on any level, or the same slug.
+    expect(() => change({ operation: 'create', fields: fields('hosen', 4) })).toThrow('Ein Begriff „Hosen“ existiert in Kategorien bereits.')
+    expect(() => change({ operation: 'create', fields: fields('  HOSEN ', 0) })).toThrow('„Hosen“ existiert')
+    expect(() => change({ operation: 'create', fields: fields('Neu', 0, 'shirts') })).toThrow('„T-Shirts“ existiert')
+    expect(() => change({ operation: 'create', fields: fields('Shirts!', 4) })).toThrow('„T-Shirts“ existiert')
+    expect(() => change({ operation: 'update', termId: 4, fields: fields('Jeans') })).toThrow('„Jeans“ existiert')
     expect(() => change({ operation: 'update', termId: 4, fields: fields('Kleidung', jeans) })).toThrow('unter sich selbst')
     expect(() => change({ operation: 'create', fields: fields('X', 999) })).toThrow('Uebergeordneter Begriff')
     expect(() => database.queueTaxonomyChange({ shopUrl, taxonomy: 'product_material', operation: 'create', fields: fields('Holz') })).toThrow('nur gelesen')

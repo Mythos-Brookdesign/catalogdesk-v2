@@ -134,3 +134,24 @@ describe('V2 first-admin authentication', () => {
     )
   })
 })
+
+it('signs in for development as the first admin or a chosen user, never an unknown one', async () => {
+  const directory = mkdtempSync(path.join(os.tmpdir(), 'catalogdesk-dev-login-'))
+  const database = storage.openDatabase(path.join(directory, 'users.sqlite'))
+  const auth = authModule.createAuthenticator(async (operation, payload) => database[operation](payload))
+  try {
+    await expect(auth.developmentLogin()).rejects.toThrow('Kein aktiver Admin')
+    const admin = await auth.bootstrap({ firstName: 'Ada', lastName: 'Admin', email: 'ada@example.com', username: 'admin', password: 'catalog8' })
+    await auth.saveUser(admin.sessionToken, { firstName: 'Grace', lastName: 'Hopper', email: 'grace@example.com', username: 'grace', role: 'employee', permissions: ['products'], password: 'password8' })
+    const session = await auth.developmentLogin()
+    expect(session.user).toMatchObject({ username: 'admin', role: 'admin' })
+    expect(auth.requireSession(session.sessionToken, 'users').username).toBe('admin')
+    const employee = await auth.developmentLogin('Grace')
+    expect(employee.user).toMatchObject({ username: 'grace', role: 'employee', permissions: ['products'] })
+    expect(() => auth.requireSession(employee.sessionToken, 'users')).toThrow('Benutzerrolle')
+    await expect(auth.developmentLogin('nobody')).rejects.toThrow('nicht gefunden')
+  } finally {
+    database.close()
+    rmSync(directory, { recursive: true, force: true })
+  }
+})

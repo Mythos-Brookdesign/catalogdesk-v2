@@ -20,7 +20,7 @@ export type LocalProduct = {
   remote: Record<string, unknown> | null
 }
 export type ProductChangeCounts = { pending: number; failed: number; conflict: number }
-export type ProductTermField = { scope: 'product' | 'variation'; field: string; multiple: boolean; taxonomy: string; label: string; hierarchical: boolean; section: string | null; terms: { id: number; name: string; path: string; depth: number }[] }
+export type ProductTermField = { scope: 'product' | 'variation'; field: string; multiple: boolean; taxonomy: string; label: string; hierarchical: boolean; section: string | null; editable: boolean; terms: TaxonomyTermOption[] }
 export type ProductEditorOptions = { termFields: ProductTermField[]; shippingClasses: { slug: string; name: string }[] }
 export type ProductChange = { productId: number; values: Record<string, unknown>; terms: Record<string, number[] | number> }
 export type ProductSyncResult = { synced: number; failed: number; conflicts: number; offline: boolean; counts: ProductChangeCounts }
@@ -62,7 +62,7 @@ export type CatalogUser = {
   role: 'admin' | 'employee'
   permissions: MenuSection[]
 }
-export type MenuSection = 'dashboard' | 'products' | 'orders' | 'customers' | 'settings' | 'users' | 'shop' | 'taxonomies' | 'sync' | 'history'
+export type MenuSection = 'dashboard' | 'products' | 'orders' | 'customers' | 'settings' | 'users' | 'shop' | 'taxonomies' | 'sync' | 'history' | 'plugins'
 export type UserInput = AdminProfile & { id?: string; role: CatalogUser['role']; permissions: MenuSection[] }
 export type UserResult<Value> = { ok: true; value: Value } | { ok: false; error: string }
 
@@ -113,7 +113,7 @@ export type TaxonomyTermChange =
   | { taxonomy: string; operation: 'update'; termId: number; fields: TermFields }
   | { taxonomy: string; operation: 'delete'; termId: number }
 export type TaxonomySyncResult = { synced: number; failed: number; offline: boolean; pendingChanges: number; failedChanges: number }
-export type TaxonomyTermOption = { id: number; path: string; depth: number }
+export type TaxonomyTermOption = { id: number; name: string; slug: string; path: string; depth: number }
 export type PluginModule = { id: string; name: string; description: string; detected: boolean; licensed: boolean; enabled: boolean; active: boolean; detectedAt: string | null }
 export type AuditCategory = 'auth' | 'users' | 'settings' | 'shop' | 'taxonomies' | 'sync' | 'catalog'
 export type AuditChange = { field: string; before: unknown; after: unknown }
@@ -146,6 +146,7 @@ declare global {
       authState: () => Promise<AuthState>
       bootstrapAdmin: (profile: AdminProfile) => Promise<AuthResult>
       login: (credentials: { username: string; password: string }) => Promise<AuthResult>
+      developmentLogin: () => Promise<AuthResult>
       logout: () => Promise<boolean>
       workspaceSummary: () => Promise<WorkspaceSummary>
       listProducts: (query?: ProductQuery) => Promise<ProductPage>

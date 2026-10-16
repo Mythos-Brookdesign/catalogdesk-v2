@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { KeyRound, LoaderCircle } from 'lucide-react'
 import App from '../../App'
 import type { AuthState } from '../../types/desktop'
@@ -16,17 +16,30 @@ export function AuthGate() {
   const [passwordConfirmation, setPasswordConfirmation] = useState('')
   const [error, setError] = useState('')
   const [busy, setBusy] = useState(false)
+  // After an explicit logout the login form stays, even where automatic development sign-in is available.
+  const loggedOut = useRef(false)
 
   useEffect(() => {
     if (!desktop) return
     let cancelled = false
+    // In `npm run dev` Main signs in automatically; elsewhere the call is refused and the form shows.
+    async function signInForDevelopment(state: AuthState) {
+      if (state.setupRequired || state.user || loggedOut.current) return state
+      const result = await desktop!.developmentLogin().catch(() => null)
+      return result?.ok ? { setupRequired: false, user: result.user } : state
+    }
     const unsubscribe = desktop.onAuthExpired(() => {
-      setAuth({ setupRequired: false, user: null })
-      setPassword('')
-      setPasswordConfirmation('')
-      setError('Bitte erneut anmelden. Die Sitzung oder Kontodaten wurden geaendert.')
+      void signInForDevelopment({ setupRequired: false, user: null }).then((state) => {
+        if (cancelled) return
+        setAuth(state)
+        if (state.user) return
+        setPassword('')
+        setPasswordConfirmation('')
+        setError('Bitte erneut anmelden. Die Sitzung oder Kontodaten wurden geaendert.')
+      })
     })
     desktop.authState()
+      .then(signInForDevelopment)
       .then((state) => { if (!cancelled) setAuth(state) })
       .catch(() => { if (!cancelled) setError('Lokale Nutzer konnten nicht geladen werden.') })
       .finally(() => { if (!cancelled) setLoading(false) })
@@ -39,6 +52,7 @@ export function AuthGate() {
   }
   if (auth.user) {
     return <App currentUser={auth.user} onLogout={async () => {
+      loggedOut.current = true
       await desktop.logout()
       setPassword('')
       setPasswordConfirmation('')

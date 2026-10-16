@@ -18,21 +18,4 @@
 .shop-settings-progress { display: flex; align-items: center; gap: 8px; color: var(--muted); font-size: 12px; }
 .shop-settings-confirm { display: grid; gap: 14px; padding: 16px 0; border-top: 1px solid var(--line); font-size: 12px; line-height: 1.6; }
 .shop-settings-confirm h3 { font-size: 15px; }
-@media (max-width: 600px) { .shop-settings-actions .button { flex: 1 1 180px; } }.shop-modules > div p { margin-top: 7px; color: var(--muted); font-size: 12px; line-height: 1.5; }
-.shop-modules ul { display: grid; gap: 0; margin: 0; padding: 0; list-style: none; border: 1px solid var(--line); border-radius: 5px; background: var(--surface); }
-.shop-modules li { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items: center; gap: 12px; padding: 12px 14px; }
-.shop-modules li + li { border-top: 1px solid var(--line); }
-.shop-modules li > svg { color: var(--accent); }
-.shop-modules li div { display: grid; gap: 3px; font-size: 12px; }
-.shop-modules li div span { color: var(--muted); line-height: 1.45; }
-.module-state { white-space: nowrap; border-radius: 3px; padding: 4px 7px; font-size: 10px; font-weight: 600; color: var(--muted); background: var(--surface-alt); }
-.module-state.active { color: var(--green); background: var(--green-soft); }
-.module-state.detected { color: var(--amber); background: var(--amber-soft); }
-@media (max-width: 600px) { .shop-modules li { grid-template-columns: auto minmax(0, 1fr); } }
-.module-controls { display: flex; align-items: center; gap: 12px; }
-.module-switch { position: relative; width: 38px; height: 22px; flex: 0 0 auto; padding: 0; border: 1px solid var(--line); border-radius: 11px; background: var(--surface-alt); transition: background .15s, border-color .15s; }
-.module-switch > span { position: absolute; top: 2px; left: 2px; width: 16px; height: 16px; border-radius: 50%; background: var(--muted); transition: transform .15s, background .15s; }
-.module-switch[aria-checked='true'] { border-color: var(--accent); background: var(--accent); }
-.module-switch[aria-checked='true'] > span { transform: translateX(16px); background: #fff; }
-@media (prefers-reduced-motion: reduce) { .module-switch, .module-switch > span { transition: none; } }
-@media (max-width: 600px) { .module-controls { grid-column: 2; justify-self: start; } }
+@media (max-width: 600px) { .shop-settings-actions .button { flex: 1 1 180px; } }
