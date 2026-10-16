@@ -1,7 +1,7 @@
 // Plugin modules: declarative knowledge about WordPress plugins (names, field meanings, editor
 // sections). The core stays generic and works without any module; modules only add meaning.
 // Modules ship with the app and are never loaded from outside.
-const registry = [require('./germanized.cjs')]
+const registry = [require('./germanized.cjs'), require('./yoast-seo.cjs')]
 
 const moduleIds = registry.map((module) => module.id)
 
@@ -54,8 +54,23 @@ function hiddenByModules(detected, switchedOff = []) {
     if (!detected.includes(module.id) || (isLicensed(module.id) && !switchedOff.includes(module.id))) continue
     for (const taxonomy of Object.keys(module.taxonomyLabels ?? {})) taxonomies.add(taxonomy)
     for (const field of Object.keys(module.termFields ?? {})) fields.add(field)
+    for (const field of module.metaFields ?? []) fields.add(`meta:${field.meta}`)
   }
   return { taxonomies, fields }
 }
 
-module.exports = { moduleIds, detectModules, activeModules, taxonomyLabel, termField, describeModules, hiddenByModules }
+// Product meta fields (meta_data entries) of active modules, as editable product fields `meta:<key>`.
+function metaFields(active) {
+  return activeModules(active).flatMap((module) => (module.metaFields ?? []).map((field) => ({
+    ...field, field: `meta:${field.meta}`, section: module.editorSection ?? module.name, module: module.id, scopes: field.scopes ?? ['product'],
+  })))
+}
+
+function previews(active) {
+  return activeModules(active).filter((module) => module.preview).map((module) => ({
+    ...module.preview, module: module.id, section: module.editorSection ?? module.name,
+    title: module.preview.title ? `meta:${module.preview.title}` : null, description: module.preview.description ? `meta:${module.preview.description}` : null,
+  }))
+}
+
+module.exports = { moduleIds, detectModules, activeModules, taxonomyLabel, termField, describeModules, hiddenByModules, metaFields, previews }

@@ -67,3 +67,13 @@ export function productFieldValue(field: string, value: unknown): string {
   }
   return String(value)
 }
+
+// Current value of a module meta field: a queued edit (merged into the payload) or the shop's meta_data entry.
+export function metaValue(payload: Record<string, unknown>, field: string) {
+  // Meta values may be stored as numbers (e.g. term IDs); always edit them as text.
+  const asText = (value: unknown) => (value === null || value === undefined ? '' : String(value))
+  if (field in payload) return asText(payload[field])
+  const key = field.slice('meta:'.length)
+  const entry = (Array.isArray(payload.meta_data) ? payload.meta_data : []).find((meta: { key?: string }) => meta?.key === key) as { value?: unknown } | undefined
+  return asText(entry?.value)
+}

@@ -82,6 +82,10 @@ Modules live in `electron/modules/` and are plain declarations, registered in `e
 
 Precedence: core names, then the shop's own WordPress labels, then module labels, then a readable slug. For term fields: core fields, then module mappings, then relations seen on imported products, then naming rules.
 
+Modules can also declare **meta fields** (`metaFields`): plugin data stored as product meta, read from and written to the WooCommerce `meta_data` list by key (other meta is left untouched). They are addressed as `meta:<key>` and go through the same queue, validation, conflict check, history and hiding as all other product fields; supported types are text, textarea, URL, select and "primary term" (one of the product's terms of another field). A module may declare a `preview` (currently `search-snippet`, rendered by the core).
+
+Second module: **Yoast SEO** (detected by the REST namespace `yoast/v1`), product-only because Yoast has no SEO data for variations: SEO title, meta description, focus keyphrase, canonical URL, breadcrumb title, robots index/follow and primary category (`_yoast_wpseo_*` meta). The editor shows an approximate Google preview (Yoast variables `%%title%%`, `%%sep%%`, `%%sitename%%`, `%%excerpt%%` resolved with the product's data; the site's own separator and name settings are not known) and length hints for title (60) and description (120-156), counted on the resolved text.
+
 First module: **Germanized** (detected by its taxonomies): German names for delivery times, units, manufacturers, price labels, deposit types, nutrients and allergens; field meanings for `delivery_time`, `unit`, `manufacturer`, `sale_price_label` and `sale_price_regular_label`; its fields appear in a separate "Germanized" section of the product editor. Without the module, the same fields still work with neutral labels.
 
 ## Usage History (Audit Log)

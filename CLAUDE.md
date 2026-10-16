@@ -18,3 +18,4 @@
 ## Plugin knowledge
 - Never hard-code knowledge about a specific WordPress plugin in the core (`taxonomies.cjs`, `products.cjs`, `database.cjs`, UI). Put it into a module in `electron/modules/` and register it in `modules/index.cjs`.
 - The core must keep working without any module (generic discovery, neutral labels). A module owns the taxonomies and fields it declares; while it is detected but switched off or unlicensed, they are hidden (`hiddenByModules()`), never deleted. Licensing hooks in at `isLicensed()` only; whether a module is used is decided by `activeModuleIds()` in the database (detected, licensed, switched on). Module effects must be applied when reading or recomputed on toggle, never baked into imported data.
+- Plugin data stored as product meta is declared as `metaFields` in its module and addressed as `meta:<key>`; use `fieldValue()` from `product-fields.cjs` to read any product field, never `item[field]` directly.

@@ -20,6 +20,19 @@ const scalarFields = {
 const variationStatuses = new Set(['publish', 'private'])
 const termFieldName = /^[a-z0-9_]{1,80}$/
 
+// Plugin data stored as product meta is addressed as `meta:<key>` (declared by plugin modules).
+const metaPrefix = 'meta:'
+const isMetaField = (field) => field.startsWith(metaPrefix)
+
+// Value of a field in a WooCommerce product object, including meta fields from `meta_data`.
+function fieldValue(item, field) {
+  if (!item || typeof item !== 'object') return null
+  if (!isMetaField(field)) return item[field] ?? null
+  if (field in item) return item[field]
+  const entry = (Array.isArray(item.meta_data) ? item.meta_data : []).find((meta) => meta?.key === field.slice(metaPrefix.length))
+  return entry ? entry.value ?? null : null
+}
+
 const isTermList = (value) => Array.isArray(value) && value.every((entry) => entry && typeof entry === 'object' && 'id' in entry)
 const isTerm = (value) => value && typeof value === 'object' && !Array.isArray(value) && 'id' in value
 
@@ -37,12 +50,16 @@ function normalize(value) {
 const same = (a, b) => normalize(a) === normalize(b)
 
 // Request body for WooCommerce: terms are sent by ID only.
+// Meta fields are collected into `meta_data`, which WooCommerce updates by key (other meta stays as it is).
 function toRequestBody(changes) {
-  return Object.fromEntries(Object.entries(changes).map(([field, value]) => {
-    if (isTermList(value)) return [field, value.map((entry) => ({ id: entry.id }))]
-    if (isTerm(value)) return [field, { id: value.id }]
-    return [field, value]
+  const meta = []
+  const body = Object.fromEntries(Object.entries(changes).flatMap(([field, value]) => {
+    if (isMetaField(field)) { meta.push({ key: field.slice(metaPrefix.length), value: value ?? '' }); return [] }
+    if (isTermList(value)) return [[field, value.map((entry) => ({ id: entry.id }))]]
+    if (isTerm(value)) return [[field, { id: value.id }]]
+    return [[field, value]]
   }))
+  return meta.length ? { ...body, meta_data: meta } : body
 }
 
 // Readable values for the history and conflict views.
@@ -61,4 +78,4 @@ function display(field, value) {
   return String(value)
 }
 
-module.exports = { scalarFields, variationStatuses, termFieldName, isTerm, isTermList, normalize, same, toRequestBody, display }
+module.exports = { scalarFields, variationStatuses, termFieldName, metaPrefix, isMetaField, fieldValue, isTerm, isTermList, normalize, same, toRequestBody, display }

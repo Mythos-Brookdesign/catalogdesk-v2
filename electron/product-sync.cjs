@@ -1,6 +1,6 @@
 const { WooError, normalizeUrl, wooRequest } = require('./shop.cjs')
 const { toProduct } = require('./products.cjs')
-const { same, toRequestBody } = require('./product-fields.cjs')
+const { fieldValue, same, toRequestBody } = require('./product-fields.cjs')
 
 // Sends queued product edits. Before writing, the product is read from the shop: a field that was changed
 // there since the edit was based on it (e.g. stock after an order) is a conflict and is not overwritten.
@@ -16,16 +16,16 @@ async function syncProductChanges(connection, database, fetcher) {
     try {
       const { data: current } = await wooRequest(connection, route, {}, fetcher, { maxBytes: 8 * 1024 * 1024 })
       if (!current || typeof current !== 'object' || current.id !== change.productId) throw new WooError('Die Antwort des Shops war unklar.')
-      const conflicts = Object.keys(change.changes).filter((field) => !same(current[field], change.base[field]) && !same(current[field], change.changes[field]))
+      const conflicts = Object.keys(change.changes).filter((field) => !same(fieldValue(current, field), change.base[field]) && !same(fieldValue(current, field), change.changes[field]))
       if (conflicts.length) {
-        await database('markProductChange', { changeId: change.id, revision: change.revision, state: 'conflict', error: null, remote: Object.fromEntries(conflicts.map((field) => [field, current[field] ?? null])) })
+        await database('markProductChange', { changeId: change.id, revision: change.revision, state: 'conflict', error: null, remote: Object.fromEntries(conflicts.map((field) => [field, fieldValue(current, field)])) })
         result.conflicts++
         record('conflict', { conflicts })
         continue
       }
       const { data: updated } = await wooRequest(connection, route, {}, fetcher, { method: 'PUT', body: toRequestBody(change.changes), maxBytes: 8 * 1024 * 1024 })
       if (!updated || typeof updated !== 'object' || updated.id !== change.productId) throw new WooError('Die Antwort des Shops war unklar. Bitte Produkte neu importieren.')
-      const ignored = Object.keys(change.changes).filter((field) => !same(updated[field], change.changes[field]))
+      const ignored = Object.keys(change.changes).filter((field) => !same(fieldValue(updated, field), change.changes[field]))
       const product = toProduct(updated, change.parentId ? { id: change.parentId, name: change.parentName ?? '' } : null)
       await database('completeProductChange', { changeId: change.id, revision: change.revision, product, ignored })
       if (ignored.length) { result.failed++; record('failure', { error: 'Shop hat Felder nicht uebernommen', ignored }) }

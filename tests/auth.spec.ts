@@ -21,7 +21,8 @@ async function mockWooCommerce(application: ElectronApplication, key: string, se
       shop.catalogProducts ??= {
         60: { id: 60, name: 'Hoodie', type: 'variable', status: 'publish', sku: 'HOOD', variations: [61, 62], price_html: '<span class="amount">49,90&nbsp;<span>€</span></span>',
           categories: [{ id: 4, name: 'Kleidung &amp; Mode', slug: 'kleidung' }], delivery_time: { id: 12, name: '2-3 Werktage', slug: '2-3-werktage', html: '' },
-          attributes: [{ id: 1, name: 'Farbe', options: ['Rot', 'Blau'], variation: true }], dimensions: { length: '', width: '', height: '' } },
+          attributes: [{ id: 1, name: 'Farbe', options: ['Rot', 'Blau'], variation: true }], dimensions: { length: '', width: '', height: '' },
+          permalink: 'https://shop.example/produkt/hoodie/', meta_data: [{ id: 7, key: '_yoast_wpseo_title', value: '%%title%% %%sep%% Shop' }] },
         70: { id: 70, name: 'Socken', type: 'simple', status: 'draft', sku: 'SOCK', price: '9.90', regular_price: '9.90', sale_price: '', manage_stock: true, stock_quantity: 3, stock_status: 'instock',
           categories: [{ id: 4, name: 'Kleidung &amp; Mode', slug: 'kleidung' }], dimensions: { length: '', width: '', height: '' } },
       }
@@ -34,6 +35,13 @@ async function mockWooCommerce(application: ElectronApplication, key: string, se
           const body = JSON.parse(String(options.body))
           const terms: Record<number, { id: number; name: string; slug: string }> = { 4: { id: 4, name: 'Kleidung &amp; Mode', slug: 'kleidung' }, 5: { id: 5, name: 'Shirts', slug: 'shirts' }, 12: { id: 12, name: '2-3 Werktage', slug: '2-3-werktage' } }
           const lookup = (id: number) => terms[id] ?? { id, name: `#${id}`, slug: `term-${id}` }
+          // meta_data is updated by key, like WooCommerce does.
+          if (body.meta_data) {
+            const meta = (product.meta_data ?? []) as { key: string; value: unknown }[]
+            for (const { key, value } of body.meta_data) { const entry = meta.find((item) => item.key === key); if (entry) entry.value = value; else meta.push({ key, value }) }
+            product.meta_data = meta
+            delete body.meta_data
+          }
           for (const [field, value] of Object.entries(body)) product[field] = Array.isArray(value) ? value.map((entry: { id: number }) => lookup(entry.id)) : value && typeof value === 'object' && 'id' in value ? ((value as { id: number }).id ? lookup((value as { id: number }).id) : undefined) : value
           if ('regular_price' in body) product.price = body.regular_price
         } else if (options.method !== 'GET') throw new Error('Unexpected shop request')
@@ -49,6 +57,11 @@ async function mockWooCommerce(application: ElectronApplication, key: string, se
       }
       if (options.redirect !== 'error')
         throw new Error('Unexpected shop request')
+      // The REST index lists plugin namespaces (here: Yoast SEO); public, read without keys.
+      if (url.pathname === '/wp-json/') {
+        if (options.headers?.Authorization) throw new Error('Keys sent outside WooCommerce')
+        return json({ namespaces: ['wc/v3', 'wp/v2', 'yoast/v1'] })
+      }
       // WordPress core routes are read without WooCommerce keys.
       if (url.pathname.startsWith('/wp-json/wp/v2/')) {
         if (options.headers?.Authorization) throw new Error('Keys sent outside WooCommerce')
@@ -301,12 +314,23 @@ test('creates the first admin before showing the app and requires login on the n
     await expect(editor.getByRole('group', { name: /Kategorien/ }).getByLabel('Winter')).toBeChecked()
     await expect(editor.getByRole('region', { name: 'Germanized' })).toBeVisible()
     await editor.getByRole('region', { name: 'Germanized' }).getByLabel('Lieferzeit', { exact: true }).selectOption({ label: '— keine —' })
+    const seo = editor.getByRole('region', { name: 'Yoast SEO' })
+    await expect(seo.getByRole('figure', { name: 'Google-Vorschau' })).toContainText('Hoodie Classic – Shop')
+    await seo.getByLabel('Meta-Beschreibung').fill('Kuscheliger Hoodie aus Bio-Baumwolle fuer kalte Tage.')
+    await expect(seo.getByRole('figure', { name: 'Google-Vorschau' })).toContainText('Kuscheliger Hoodie aus Bio-Baumwolle')
+    await expect(seo.locator('.meta-counter').first()).toContainText('/ 60')
+    await seo.getByLabel('Hauptkategorie').selectOption({ label: 'Shirts' })
     await page.screenshot({ path: testInfo.outputPath('product-editor.png') })
     await editor.getByRole('button', { name: 'Speichern', exact: true }).click()
     await expect(page.getByRole('status').filter({ hasText: 'Im Shop gespeichert' })).toContainText('„Hoodie Classic“ wurde uebertragen.')
     await expect(productRows.first()).toContainText('Hoodie Classic')
     await expect(inspector).toContainText('Kleidung & Mode, Shirts, Winter')
     expect(await application.evaluate(() => (globalThis as unknown as { catalogProducts: Record<number, { delivery_time: unknown }> }).catalogProducts[60].delivery_time)).toBeUndefined()
+    expect(await application.evaluate(() => (globalThis as unknown as { catalogProducts: Record<number, { meta_data: unknown }> }).catalogProducts[60].meta_data)).toEqual([
+      { id: 7, key: '_yoast_wpseo_title', value: '%%title%% %%sep%% Shop' },
+      { key: '_yoast_wpseo_metadesc', value: 'Kuscheliger Hoodie aus Bio-Baumwolle fuer kalte Tage.' },
+      { key: '_yoast_wpseo_primary_product_cat', value: '5' },
+    ])
 
     await application.evaluate(() => { (globalThis as { catalogOffline?: boolean }).catalogOffline = true })
     await page.screenshot({ path: testInfo.outputPath('products-edit-icons.png') })
@@ -444,7 +468,7 @@ test('creates the first admin before showing the app and requires login on the n
     await page.getByRole('button', { name: 'Historie', exact: true }).click()
     const history = page.locator('.history-table')
     for (const summary of ['Shopverbindung entfernt', 'Benutzer „Grace Mitarbeiter“ geloescht', 'Benutzer „Grace Hopper“ angelegt', 'Begriff „Hosen“ in Kategorien angelegt',
-      'Begriff „T-Shirts“ in Kategorien geaendert', '2 Taxonomie-Aenderungen an den Shop uebertragen', 'Taxonomien importiert: 7 Taxonomien, 8 Begriffe', 'Produkte importiert: 2 Produkte, 2 Varianten', 'Modul Germanized erkannt und aktiviert', 'Modul Germanized ausgeschaltet', 'Modul Germanized eingeschaltet', 'Produkt „Hoodie Classic“ geaendert', 'Produkt „Socken“ geaendert', 'Konflikt bei „Socken“ geloest', 'Shopverbindung gespeichert', 'Farbschema auf Dunkel geaendert', 'Ersten Administrator eingerichtet'])
+      'Begriff „T-Shirts“ in Kategorien geaendert', '2 Taxonomie-Aenderungen an den Shop uebertragen', 'Taxonomien importiert: 7 Taxonomien, 8 Begriffe', 'Produkte importiert: 2 Produkte, 2 Varianten', 'Modul Germanized erkannt und aktiviert', 'Modul Yoast SEO erkannt und aktiviert', 'Modul Germanized ausgeschaltet', 'Modul Germanized eingeschaltet', 'Produkt „Hoodie Classic“ geaendert', 'Produkt „Socken“ geaendert', 'Konflikt bei „Socken“ geloest', 'Shopverbindung gespeichert', 'Farbschema auf Dunkel geaendert', 'Ersten Administrator eingerichtet'])
       await expect(history.getByRole('cell', { name: summary, exact: true }).first()).toBeVisible()
     await history.getByRole('button', { name: 'Details: Benutzer „Grace Mitarbeiter“ geaendert' }).click()
     const changeRow = history.locator('.history-changes tr').filter({ hasText: 'Name' }).first()
