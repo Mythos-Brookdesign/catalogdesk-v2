@@ -17,7 +17,7 @@ it('detects Germanized by its taxonomies and provides labels and field meanings'
   expect(modules.taxonomyLabel(detected, 'product_price_label')).toBe('Preishinweise')
   expect(modules.taxonomyLabel([], 'product_price_label')).toBeNull()
   expect(modules.termField(detected, 'sale_price_regular_label')).toMatchObject({ taxonomy: 'product_price_label', label: 'Preishinweis regulaer', section: 'Germanized' })
-  expect(modules.describeModules(detected)).toEqual([expect.objectContaining({ id: 'germanized', detected: true, active: true })])
+  expect(modules.describeModules(detected)).toEqual([expect.objectContaining({ id: 'germanized', detected: true, active: true }), expect.objectContaining({ id: 'yoast-seo', detected: false, active: false })])
 })
 
 it('uses active modules for editor fields and keeps the generic behaviour without them', () => {
@@ -44,7 +44,7 @@ it('uses active modules for editor fields and keeps the generic behaviour withou
       ['sale_price_label', 'product_price_label', 'Preishinweis Angebot', 'Germanized'],
       ['sale_price_regular_label', 'product_price_label', 'Preishinweis regulaer', 'Germanized'],
     ])
-    expect(database.listModules({ shopUrl }).modules).toEqual([expect.objectContaining({ id: 'germanized', active: true, detectedAt: expect.any(String) })])
+    expect(database.listModules({ shopUrl }).modules.find((entry) => entry.id === 'germanized')).toMatchObject({ active: true, detectedAt: expect.any(String) })
     // Without the module the generic naming rule still finds the taxonomy, with neutral labels.
     importWith([])
     expect(fields()).toEqual([
@@ -52,7 +52,7 @@ it('uses active modules for editor fields and keeps the generic behaviour withou
       ['sale_price_label', 'product_price_label', 'Preishinweise (sale_price_label)', null],
       ['sale_price_regular_label', 'product_price_label', 'Preishinweise (sale_price_regular_label)', null],
     ])
-    expect(database.listModules({ shopUrl }).modules[0]).toMatchObject({ detected: false, active: false, detectedAt: null })
+    expect(database.listModules({ shopUrl }).modules.find((entry) => entry.id === 'germanized')).toMatchObject({ detected: false, active: false, detectedAt: null })
   } finally { database.close() }
 })
 
@@ -69,7 +69,7 @@ it('detects modules for shops imported before modules existed', () => {
   raw.exec('DELETE FROM shop_modules; PRAGMA user_version = 12;')
   raw.close()
   database = databaseModule.openDatabase(filename)
-  try { expect(database.listModules({ shopUrl }).modules[0]).toMatchObject({ id: 'germanized', active: true }) }
+  try { expect(database.listModules({ shopUrl }).modules.find((entry) => entry.id === 'germanized')).toMatchObject({ active: true }) }
   finally { database.close() }
 })
 

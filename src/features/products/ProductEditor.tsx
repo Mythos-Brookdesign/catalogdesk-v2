@@ -2,6 +2,8 @@ import { useMemo, useState } from 'react'
 import { LoaderCircle, Plus, Save, Search, X } from 'lucide-react'
 import type { LocalProduct as ProductSummary, ProductEditorOptions, ProductTermField, TaxonomyTermOption } from '../../types/desktop'
 import { findDuplicate } from '../taxonomies/termNames'
+import { ModuleFields } from './ModuleFields'
+import { metaValue } from './model'
 import { productTypeLabels } from './model'
 
 type Values = {
@@ -92,8 +94,9 @@ function TermPicker({ field, selected, onChange, onAdd }: { field: ProductTermFi
   </fieldset>
 }
 
-export function ProductEditor({ product, options, busy, error, onCancel, onSave, onCreateTerm }: {
+export function ProductEditor({ product, options, busy, error, onCancel, onSave, onCreateTerm, siteName = '' }: {
   product: ProductSummary
+  siteName?: string
   options: ProductEditorOptions
   busy: boolean
   error: string
@@ -108,6 +111,9 @@ export function ProductEditor({ product, options, busy, error, onCancel, onSave,
   const termFields = options.termFields.filter((field) => field.scope === (variation ? 'variation' : 'product'))
   const initialTerms = useMemo<Terms>(() => Object.fromEntries(options.termFields.map((field) => [field.field, termIds(product.payload[field.field])])), [options, product])
   const [values, setValues] = useState(initial)
+  const metaFields = options.metaFields.filter((field) => field.scopes.includes(variation ? 'variation' : 'product'))
+  const initialMeta = useMemo(() => Object.fromEntries(options.metaFields.map((field) => [field.field, metaValue(product.payload, field.field)])), [options, product])
+  const [meta, setMeta] = useState<Record<string, string>>(initialMeta)
   const [terms, setTerms] = useState<Terms>(initialTerms)
   const set = <Key extends keyof Values>(key: Key, value: Values[Key]) => setValues({ ...values, [key]: value })
 
@@ -118,6 +124,7 @@ export function ProductEditor({ product, options, busy, error, onCancel, onSave,
     for (const key of ['name', 'sku', 'status', 'short_description', 'description', 'regular_price', 'sale_price', 'weight', 'shipping_class', 'manage_stock', 'stock_status'] as const)
       if (values[key] !== initial[key] && !(variation && (key === 'name' || key === 'short_description'))) changed[key] = values[key]
     if (values.stock_quantity !== initial.stock_quantity) changed.stock_quantity = values.stock_quantity.trim() === '' ? null : Number(values.stock_quantity)
+    for (const field of metaFields) if ((meta[field.field] ?? '') !== (initialMeta[field.field] ?? '')) changed[field.field] = meta[field.field] ?? ''
     if (['length', 'width', 'height'].some((key) => values[key as keyof Values] !== initial[key as keyof Values]))
       changed.dimensions = { length: values.length, width: values.width, height: values.height }
     const changedTerms: Record<string, number[] | number> = {}
@@ -188,6 +195,9 @@ export function ProductEditor({ product, options, busy, error, onCancel, onSave,
               onAdd={onCreateTerm && field.editable ? () => setAddingTo(field) : undefined} />)}
           </div>
         </section>)}
+        {metaFields.length > 0 && <ModuleFields fields={metaFields} previews={variation ? [] : options.previews} values={meta} onChange={(field, value) => setMeta({ ...meta, [field]: value })}
+          termFields={options.termFields.filter((field) => field.scope === 'product')} selectedTerms={terms} productName={values.name || product.name} shortDescription={values.short_description}
+          permalink={typeof product.payload.permalink === 'string' ? product.payload.permalink : ''} siteName={siteName} />}
       </fieldset>
       {error && <p className="auth-error" role="alert">{error}</p>}
       <footer><button className="button" type="button" disabled={busy} onClick={onCancel}>Abbrechen</button><button className="button primary" disabled={busy || (!variation && !values.name.trim())}>{busy ? <LoaderCircle className="spin" size={16} /> : <Save size={16} />}Speichern</button></footer>

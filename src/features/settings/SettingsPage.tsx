@@ -11,7 +11,7 @@ function canonicalUrl(value: string) {
   } catch { return '' }
 }
 
-export function ShopConnectionPage() {
+export function ShopConnectionPage({ onConnectionChange }: { onConnectionChange?: (url: string | null) => void } = {}) {
   const desktop = window.catalogDesk
   const notify = useNotify()
   const [url, setUrl] = useState('')
@@ -47,7 +47,7 @@ export function ShopConnectionPage() {
       if (operation === 'save') {
         const result = await desktop.saveShopConnection(input)
         if (!result.ok) throw new Error(result.error)
-        setSavedUrl(result.value.url); setUrl(result.value.url)
+        setSavedUrl(result.value.url); setUrl(result.value.url); onConnectionChange?.(result.value.url)
         setConsumerKey(''); setConsumerSecret(''); setVisible(false)
         notify.success('Shopverbindung gespeichert', { message: result.value.url, key: 'shop' })
       } else if (operation === 'test') {
@@ -57,7 +57,7 @@ export function ShopConnectionPage() {
       } else {
         const result = await desktop.deleteShopConnection()
         if (!result.ok) throw new Error(result.error)
-        setSavedUrl(null); setUrl(''); setConsumerKey(''); setConsumerSecret(''); setVisible(false)
+        setSavedUrl(null); setUrl(''); onConnectionChange?.(null); setConsumerKey(''); setConsumerSecret(''); setVisible(false)
         setConfirmDelete(false); notify.info('Shopverbindung entfernt', { message: 'Die API-Schluessel wurden lokal geloescht. Katalogdaten bleiben erhalten.', key: 'shop' })
       }
     } catch (reason) {

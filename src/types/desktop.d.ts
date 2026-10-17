@@ -21,7 +21,12 @@ export type LocalProduct = {
 }
 export type ProductChangeCounts = { pending: number; failed: number; conflict: number }
 export type ProductTermField = { scope: 'product' | 'variation'; field: string; multiple: boolean; taxonomy: string; label: string; hierarchical: boolean; section: string | null; editable: boolean; terms: TaxonomyTermOption[] }
-export type ProductEditorOptions = { termFields: ProductTermField[]; shippingClasses: { slug: string; name: string }[] }
+export type ProductMetaField = {
+  field: string; meta: string; label: string; type: 'text' | 'textarea' | 'url' | 'select' | 'primaryTerm'; section: string; module: string; scopes: ('product' | 'variation')[]
+  recommended?: number; minimum?: number; hint?: string; of?: string; options?: { value: string; label: string }[]
+}
+export type ProductPreview = { type: 'search-snippet'; module: string; section: string; title: string | null; description: string | null }
+export type ProductEditorOptions = { termFields: ProductTermField[]; shippingClasses: { slug: string; name: string }[]; metaFields: ProductMetaField[]; previews: ProductPreview[] }
 export type ProductChange = { productId: number; values: Record<string, unknown>; terms: Record<string, number[] | number> }
 export type ProductSyncResult = { synced: number; failed: number; conflicts: number; offline: boolean; counts: ProductChangeCounts }
 export type ProductChangeResult = { queued: boolean; sync: ProductSyncResult | null; outcome: 'success' | 'failure' | 'conflict' | null; conflicts: string[]; error: string | null }

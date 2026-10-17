@@ -121,7 +121,8 @@ app.whenReady().then(async () => {
       let user = null
       let stored = null
       try {
-        const authorized = authorize(event, envelope, 'shop')
+        // Every signed-in user may see whether a shop is connected (URL only, no keys).
+        const authorized = authorize(event, envelope, operation === 'summary' ? 'session' : 'shop')
         const payload = authorized.payload
         user = authorized.user
         if (operation === 'summary') return { ok: true, value: await shopStore.summary() }

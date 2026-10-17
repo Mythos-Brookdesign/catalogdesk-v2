@@ -1,5 +1,6 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import {
+  ArrowRight,
   Boxes,
   ChevronDown,
   CircleHelp,
@@ -100,6 +101,16 @@ function App({
   const canAccess = (section: Section) => !currentUser || currentUser.role === 'admin' || currentUser.permissions.includes(section)
   const firstSection = (Object.keys(sectionTitles) as Section[]).find(canAccess)
   const [activeSection, setActiveSection] = useState<Section>(firstSection ?? 'dashboard')
+  const [shopUrl, setShopUrl] = useState<string | null | undefined>(undefined)
+
+  useEffect(() => {
+    if (!desktop) return
+    let cancelled = false
+    desktop.shopConnection()
+      .then((result) => { if (!cancelled && result.ok) setShopUrl(result.value?.url ?? null) })
+      .catch(() => undefined)
+    return () => { cancelled = true }
+  }, [desktop])
 
   return (
     <div className="app-shell">
@@ -151,6 +162,22 @@ function App({
             <button className="icon-button" aria-label="Hilfe" title="Hilfe"><CircleHelp size={17} /></button>
           </div>
         </header>
+        {shopUrl === null && activeSection !== 'shop' && (
+          <div className="shop-missing-banner" role="status">
+            <PlugZap size={17} />
+            <span>
+              <strong>Noch keine Shopverbindung eingerichtet.</strong>
+              {canAccess('shop')
+                ? ' Verbinde zuerst deinen WooCommerce-Shop unter „Shopverbindung“, um Produkte zu importieren und zu synchronisieren.'
+                : ' Ein Administrator muss zuerst den WooCommerce-Shop unter „Shopverbindung“ verbinden.'}
+            </span>
+            {canAccess('shop') && (
+              <button className="button primary" onClick={() => setActiveSection('shop')}>
+                Shopverbindung öffnen<ArrowRight size={15} />
+              </button>
+            )}
+          </div>
+        )}
         {!firstSection && <main className="section-page"><h1>Keine Bereiche freigegeben</h1></main>}
         {canAccess(activeSection) && activeSection === 'dashboard' && (
           <DashboardPage
@@ -162,7 +189,7 @@ function App({
         {canAccess(activeSection) && activeSection === 'products' && <ProductsPage desktop={desktop} canCreateTerms={canAccess('taxonomies')} />}
         {canAccess(activeSection) && activeSection === 'users' && <UsersPage currentUser={currentUser} />}
         {canAccess(activeSection) && activeSection === 'settings' && <AppearanceSettingsPage />}
-        {canAccess(activeSection) && activeSection === 'shop' && <ShopConnectionPage />}
+        {canAccess(activeSection) && activeSection === 'shop' && <ShopConnectionPage onConnectionChange={setShopUrl} />}
         {canAccess(activeSection) && activeSection === 'taxonomies' && <TaxonomiesPage />}
         {canAccess(activeSection) && activeSection === 'history' && <HistoryPage />}
         {canAccess(activeSection) && activeSection === 'plugins' && <PluginsPage />}

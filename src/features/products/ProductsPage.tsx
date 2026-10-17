@@ -60,7 +60,7 @@ export function ProductsPage({ desktop, canCreateTerms = false }: { desktop?: De
 
   const selected = page?.products.find((product) => product.id === selectedId) ?? null
   function select(product: ProductSummary) { setSelectedId(product.id); setResolutions({}) }
-  const fieldLabel = (field: string) => productFieldLabels[field] ?? editorOptions?.termFields.find((entry) => entry.field === field)?.label ?? field
+  const fieldLabel = (field: string) => productFieldLabels[field] ?? editorOptions?.termFields.find((entry) => entry.field === field)?.label ?? editorOptions?.metaFields.find((entry) => entry.field === field)?.label ?? field
 
   const sync = useCallback(async (retryFailed = false, quiet = false) => {
     if (!desktop) return
@@ -290,7 +290,8 @@ export function ProductsPage({ desktop, canCreateTerms = false }: { desktop?: De
             .map(([label, names]) => <div key={label} className="product-inspector-term"><dt>{label}</dt><dd>{names.join(', ')}</dd></div>)}
         </dl>
       </aside>}
-      {editing && editorOptions && <ProductEditor product={editing} options={editorOptions} busy={busy} error={formError} onCancel={() => setEditing(null)} onSave={(values, terms) => void save(values, terms)} onCreateTerm={canCreateTerms ? createTerm : undefined} />}
+      {editing && editorOptions && <ProductEditor product={editing} options={editorOptions} busy={busy} error={formError} onCancel={() => setEditing(null)} onSave={(values, terms) => void save(values, terms)} onCreateTerm={canCreateTerms ? createTerm : undefined}
+        siteName={(() => { try { return summary?.latestShopUrl ? new URL(summary.latestShopUrl).host : '' } catch { return '' } })()} />}
       <footer className="products-footer">
         <span>Lokaler Arbeitsbereich</span>
         <span className="products-pager">

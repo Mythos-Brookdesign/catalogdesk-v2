@@ -95,6 +95,10 @@ h1, h2, h3 { font-family: 'Manrope Variable', sans-serif; }
 .user-chip { padding: 5px 8px; border: 1px solid var(--line); border-radius: 4px; color: var(--ink); background: var(--surface-alt); font-size: 10px; }
 .icon-button { width: 30px; height: 30px; display: grid; place-items: center; border: 1px solid transparent; border-radius: 4px; background: transparent; color: var(--muted); }
 .icon-button:hover { border-color: var(--line); background: var(--surface-alt); color: var(--ink); }
+.shop-missing-banner { display: flex; align-items: center; gap: 12px; padding: 10px 28px; border-bottom: 1px solid var(--line); background: var(--amber-soft); color: var(--ink); font-size: 11px; }
+.shop-missing-banner > svg { flex: none; color: var(--amber); }
+.shop-missing-banner > span { flex: 1; min-width: 0; }
+.shop-missing-banner .button { flex: none; }
 .button { min-height: 34px; display: inline-flex; align-items: center; justify-content: center; gap: 8px; padding: 0 12px; border: 1px solid var(--line); border-radius: 4px; background: var(--surface); color: var(--ink); font-size: 11px; font-weight: 550; }
 .button:hover:not(:disabled) { background: var(--surface-alt); }
 .button.primary { border-color: var(--accent); background: var(--accent); color: #fff; }
@@ -111,5 +115,6 @@ h1, h2, h3 { font-family: 'Manrope Variable', sans-serif; }
   .sidebar-status { justify-content: center; padding-inline: 0; }
   .sidebar-status span:nth-child(2), .sidebar-status > svg { display: none; }
   .app-topbar { padding-inline: 14px; }
+  .shop-missing-banner { padding-inline: 14px; flex-wrap: wrap; }
   .section-page { padding: 22px 16px; }
 }

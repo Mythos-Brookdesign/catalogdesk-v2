@@ -3,7 +3,7 @@ const { mkdirSync } = require('node:fs')
 const path = require('node:path')
 const { randomUUID } = require('node:crypto')
 const { z } = require('zod')
-const { scalarFields, variationStatuses, termFieldName, isTerm, isTermList, same } = require('./product-fields.cjs')
+const { scalarFields, variationStatuses, termFieldName, isMetaField, fieldValue, isTerm, isTermList, same } = require('./product-fields.cjs')
 const modules = require('./modules/index.cjs')
 const { humanize } = require('./taxonomies.cjs')
 const { findDuplicate } = require('./term-names.cjs')
@@ -650,6 +650,21 @@ function openDatabase(filename) {
     })
   }
 
+  // Product meta fields declared by active plugin modules (e.g. Yoast SEO), for one scope.
+  function metaFieldDefinitions(shopUrl, scope) {
+    return modules.metaFields(activeModuleIds(shopUrl)).filter((field) => field.scopes.includes(scope))
+  }
+
+  function setFieldValue(payload, field, value) {
+    if (!isMetaField(field)) { payload[field] = value; return }
+    const key = field.slice('meta:'.length)
+    const meta = Array.isArray(payload.meta_data) ? payload.meta_data : (payload.meta_data = [])
+    const entry = meta.find((item) => item?.key === key)
+    if (entry) entry.value = value
+    else meta.push({ key, value })
+    delete payload[field]
+  }
+
   function taxonomyShop(shopUrl) {
     return shopUrl ?? database.prepare('SELECT shop_url FROM taxonomies ORDER BY imported_at DESC LIMIT 1').get()?.shop_url ?? null
   }
@@ -1055,13 +1070,14 @@ function openDatabase(filename) {
     productEditorOptions(input) {
       const parsed = z.object({ shopUrl: shopUrlSchema.optional() }).strict().parse(input ?? {})
       const shopUrl = parsed.shopUrl ?? database.prepare(`SELECT shop_url FROM shops WHERE ${catalogShop} ORDER BY imported_at DESC LIMIT 1`).get()?.shop_url
-      if (!shopUrl) return { termFields: [], shippingClasses: [] }
+      if (!shopUrl) return { termFields: [], shippingClasses: [], metaFields: [], previews: [] }
       const termFields = termFieldTaxonomies(shopUrl).map((field) => ({
         ...field,
         terms: queryTerms(shopUrl, field.taxonomy, field.hierarchical ? 1 : 0, '', 20_000, 0).terms.filter((term) => term.state !== 'delete').map(({ id, name, slug, path, depth }) => ({ id, name, slug, path, depth })),
       }))
       const shippingClasses = database.prepare("SELECT slug, name FROM taxonomy_terms WHERE shop_url = ? AND taxonomy = 'product_shipping_class' ORDER BY name COLLATE NOCASE").all(shopUrl)
-      return { termFields, shippingClasses }
+      const active = activeModuleIds(shopUrl)
+      return { termFields, shippingClasses, metaFields: modules.metaFields(active), previews: modules.previews(active) }
     },
     queueProductChange(input) {
       const parsed = productChangeSchema.parse(input)
@@ -1076,7 +1092,19 @@ function openDatabase(filename) {
         const base = existing ? JSON.parse(existing.base) : {}
         const current = { ...payload, ...changes }
         const next = {}
+        const metaDefinitions = new Map(metaFieldDefinitions(shopUrl, variation ? 'variation' : 'product').map((definition) => [definition.field, definition]))
         for (const [field, raw] of Object.entries(parsed.values)) {
+          if (isMetaField(field)) {
+            const definition = metaDefinitions.get(field)
+            if (!definition) throw new Error(`Produktfeld ${field} kann nicht bearbeitet werden.`)
+            const value = typeof raw === 'string' ? raw.trim() : raw === null || raw === undefined ? '' : null
+            if (value === null || value.length > 10_000) throw new Error(`Produkt: ${definition.label} ist ungueltig.`)
+            if (definition.type === 'select' && !definition.options.some((option) => option.value === value)) throw new Error(`Produkt: ${definition.label} ist ungueltig.`)
+            if (definition.type === 'url' && value && !/^https?:\/\/[^\s]+$/i.test(value)) throw new Error(`Produkt: ${definition.label} muss eine vollstaendige Adresse sein (https://...).`)
+            if (definition.type === 'primaryTerm' && value && !/^\d+$/.test(value)) throw new Error(`Produkt: ${definition.label} ist ungueltig.`)
+            next[field] = value
+            continue
+          }
           const definition = scalarFields[field]
           if (!definition || (variation && !definition.variation)) throw new Error(`Produktfeld ${field} kann nicht bearbeitet werden.`)
           const value = definition.schema.safeParse(raw)
@@ -1100,6 +1128,13 @@ function openDatabase(filename) {
         if (next.shipping_class && !database.prepare("SELECT 1 FROM taxonomy_terms WHERE shop_url = ? AND taxonomy = 'product_shipping_class' AND slug = ?").get(shopUrl, next.shipping_class))
           throw new Error('Produkt: Versandklasse wurde nicht gefunden.')
         const merged = { ...current, ...next }
+        // A primary term must be one of the product's terms of that field (e.g. Yoast's main category).
+        for (const [field, definition] of metaDefinitions) {
+          const value = fieldValue(merged, field)
+          if (definition.type !== 'primaryTerm' || !value || !(field in next)) continue
+          if (!(Array.isArray(merged[definition.of]) ? merged[definition.of] : []).some((term) => String(term.id) === String(value)))
+            throw new Error(`Produkt: ${definition.label} muss eine der zugeordneten Kategorien sein.`)
+        }
         if (merged.sale_price && merged.regular_price && Number(merged.sale_price) >= Number(merged.regular_price))
           throw new Error('Produkt: Der Angebotspreis muss kleiner als der regulaere Preis sein.')
         if (next.sku) {
@@ -1109,14 +1144,14 @@ function openDatabase(filename) {
         }
         const before = {}
         for (const [field, value] of Object.entries(next)) {
-          before[field] = current[field] ?? null
-          const original = field in base ? base[field] : payload[field] ?? null
+          before[field] = fieldValue(current, field)
+          const original = field in base ? base[field] : fieldValue(payload, field)
           // Setting a field back to the shop value removes it from the change.
           if (same(value, original)) { delete changes[field]; delete base[field] }
           else { changes[field] = value; base[field] = original }
         }
         const now = new Date().toISOString()
-        const labels = Object.fromEntries(Object.keys(next).map((field) => [field, scalarFields[field]?.label ?? termFields.get(field)?.label ?? field]))
+        const labels = Object.fromEntries(Object.keys(next).map((field) => [field, scalarFields[field]?.label ?? termFields.get(field)?.label ?? metaDefinitions.get(field)?.label ?? field]))
         const result = { productId, name: merged.name || product.name, variation, before, after: next, labels }
         if (!Object.keys(changes).length) {
           if (existing) database.prepare('DELETE FROM product_changes WHERE id = ?').run(existing.id)
@@ -1155,7 +1190,7 @@ function openDatabase(filename) {
         if (dropped.length) {
           const row = database.prepare('SELECT payload FROM products WHERE shop_url = ? AND product_id = ?').get(parsed.shopUrl, parsed.productId)
           const payload = JSON.parse(row.payload)
-          for (const field of dropped) payload[field] = remote[field]
+          for (const field of dropped) setFieldValue(payload, field, remote[field])
           database.prepare('UPDATE products SET payload = ?, name = coalesce(?, name), sku = coalesce(?, sku), status = coalesce(?, status) WHERE shop_url = ? AND product_id = ?')
             .run(JSON.stringify(payload), dropped.includes('name') ? remote.name : null, dropped.includes('sku') ? remote.sku : null, dropped.includes('status') ? remote.status : null, parsed.shopUrl, parsed.productId)
         }
@@ -1191,12 +1226,12 @@ function openDatabase(filename) {
           const remaining = Object.fromEntries(parsed.ignored.filter((field) => field in changes).map((field) => [field, changes[field]]))
           if (!Object.keys(remaining).length) database.prepare('DELETE FROM product_changes WHERE id = ?').run(change.id)
           else database.prepare("UPDATE product_changes SET changes = ?, base = ?, state = 'failed', error = ? WHERE id = ?")
-            .run(JSON.stringify(remaining), JSON.stringify(Object.fromEntries(Object.keys(remaining).map((field) => [field, sent[field] ?? null]))), `Der Shop hat ${Object.keys(remaining).map((field) => scalarFields[field]?.label ?? termFieldTaxonomies(change.shopUrl).find((entry) => entry.field === field)?.label ?? field).join(', ')} nicht uebernommen.`, change.id)
+            .run(JSON.stringify(remaining), JSON.stringify(Object.fromEntries(Object.keys(remaining).map((field) => [field, fieldValue(sent, field)]))), `Der Shop hat ${Object.keys(remaining).map((field) => scalarFields[field]?.label ?? termFieldTaxonomies(change.shopUrl).find((entry) => entry.field === field)?.label ?? modules.metaFields(activeModuleIds(change.shopUrl)).find((entry) => entry.field === field)?.label ?? field).join(', ')} nicht uebernommen.`, change.id)
           return true
         }
         // Edited again while the request was running: the shop's answer is the new base for the sent fields.
-        for (const field of Object.keys(base)) if (field in sent) base[field] = sent[field]
-        for (const field of Object.keys(changes)) if (same(changes[field], sent[field])) { delete changes[field]; delete base[field] }
+        for (const field of Object.keys(base)) base[field] = fieldValue(sent, field)
+        for (const field of Object.keys(changes)) if (same(changes[field], fieldValue(sent, field))) { delete changes[field]; delete base[field] }
         if (!Object.keys(changes).length) database.prepare('DELETE FROM product_changes WHERE id = ?').run(change.id)
         else database.prepare('UPDATE product_changes SET changes = ?, base = ? WHERE id = ?').run(JSON.stringify(changes), JSON.stringify(base), change.id)
         return true
