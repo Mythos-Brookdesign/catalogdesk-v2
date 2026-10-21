@@ -66,16 +66,24 @@ function hiddenByModules(detected, switchedOff = [], inactive = []) {
     if (!deactivated && (!detected.includes(module.id) || (isLicensed(module.id) && !switchedOff.includes(module.id)))) continue
     for (const taxonomy of Object.keys(module.taxonomyLabels ?? {})) taxonomies.add(taxonomy)
     for (const field of Object.keys(module.termFields ?? {})) fields.add(field)
-    for (const field of module.metaFields ?? []) fields.add(`meta:${field.meta}`)
+    for (const field of module.metaFields ?? []) {
+      fields.add(`meta:${field.meta}`)
+      if (field.idMeta) fields.add(`meta:${field.idMeta}`)
+    }
   }
   return { taxonomies, fields }
 }
 
 // Product meta fields (meta_data entries) of active modules, as editable product fields `meta:<key>`.
+// An image field stores the URL and, in `idMeta`, the media ID (plugins like Yoast prefer the ID): it becomes
+// the visible image field plus a hidden `mediaId` field that is always edited together with it.
 function metaFields(active) {
-  return activeModules(active).flatMap((module) => (module.metaFields ?? []).map((field) => ({
-    ...field, field: `meta:${field.meta}`, section: module.editorSection ?? module.name, module: module.id, scopes: field.scopes ?? ['product'],
-  })))
+  return activeModules(active).flatMap((module) => (module.metaFields ?? []).flatMap((field) => {
+    const shared = { section: module.editorSection ?? module.name, module: module.id, scopes: field.scopes ?? ['product'] }
+    const visible = { ...field, ...shared, field: `meta:${field.meta}`, ...(field.idMeta ? { idField: `meta:${field.idMeta}` } : {}) }
+    if (!field.idMeta) return [visible]
+    return [visible, { meta: field.idMeta, label: `${field.label} (Medien-ID)`, type: 'mediaId', hidden: true, imageField: visible.field, field: visible.idField, ...shared, group: field.group }]
+  }))
 }
 
 function previews(active) {

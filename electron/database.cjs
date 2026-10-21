@@ -3,7 +3,7 @@ const { mkdirSync } = require('node:fs')
 const path = require('node:path')
 const { randomUUID } = require('node:crypto')
 const { z } = require('zod')
-const { scalarFields, variationStatuses, termFieldName, isMetaField, fieldValue, isTerm, isTermList, same } = require('./product-fields.cjs')
+const { scalarFields, variationStatuses, termFieldName, isMetaField, fieldValue, isImage, isTerm, isTermList, same } = require('./product-fields.cjs')
 const modules = require('./modules/index.cjs')
 const { humanize } = require('./taxonomies.cjs')
 const { findDuplicate } = require('./term-names.cjs')
@@ -152,7 +152,7 @@ function openDatabase(filename) {
     database.exec('PRAGMA busy_timeout = 5000; PRAGMA foreign_keys = ON; PRAGMA journal_mode = WAL; PRAGMA synchronous = FULL;')
     database.exec('BEGIN IMMEDIATE')
     const version = database.prepare('PRAGMA user_version').get().user_version
-    if (version > 15) throw new Error('Database schema is newer than this app.')
+    if (version > 16) throw new Error('Database schema is newer than this app.')
     if (version < 1) {
       database.exec(`
         CREATE TABLE shops (
@@ -450,6 +450,25 @@ function openDatabase(filename) {
         ) STRICT;
         PRAGMA user_version = 15;`)
     }
+    if (version < 16) {
+      // Images picked from the computer, kept locally until the shop has them (offline-capable like all edits).
+      // Product edits reference them as -id until the upload is done.
+      database.exec(`CREATE TABLE IF NOT EXISTS media_uploads (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          shop_url TEXT NOT NULL,
+          file TEXT NOT NULL,
+          filename TEXT NOT NULL,
+          mime TEXT NOT NULL,
+          size INTEGER NOT NULL,
+          thumbnail TEXT,
+          state TEXT NOT NULL DEFAULT 'pending' CHECK(state IN ('pending', 'failed', 'done')),
+          media_id INTEGER,
+          source_url TEXT,
+          error TEXT,
+          created_at TEXT NOT NULL
+        ) STRICT;
+        PRAGMA user_version = 16;`)
+    }
     database.exec('COMMIT')
   } catch (error) {
     if (database.isTransaction) database.exec('ROLLBACK')
@@ -521,6 +540,8 @@ function openDatabase(filename) {
       const changes = JSON.parse(row.changes)
       let touched = false
       for (const [field, value] of Object.entries(changes)) {
+        // Pending uploads use negative IDs as well; they are resolved by completeMediaUpload.
+        if (field === 'images' || field === 'image') continue
         if (isTermList(value) && value.some((term) => term.id === ref)) {
           changes[field] = value.flatMap((term) => term.id !== ref ? [term] : replacement ? [replacement] : [])
           touched = true
@@ -531,6 +552,38 @@ function openDatabase(filename) {
       }
       if (touched) update.run(JSON.stringify(changes), row.id)
     }
+  }
+
+  // Pending uploads are referenced as -id: in `images`/`image` and in module image ID meta fields
+  // (e.g. Yoast's social image), whose paired URL field follows the upload.
+  const mediaIdFields = () => modules.metaFields(modules.moduleIds).filter((field) => field.type === 'mediaId')
+  function rewriteUploadRefs(changes, ref, media) {
+    let touched = false
+    const swap = (image) => {
+      if (!image || image.id !== ref) return image
+      touched = true
+      return media ? { ...image, id: media.id, src: media.src } : null
+    }
+    if (Array.isArray(changes.images)) changes.images = changes.images.map(swap).filter(Boolean)
+    if (changes.image && typeof changes.image === 'object') changes.image = swap(changes.image)
+    for (const field of mediaIdFields()) {
+      if (changes[field.field] !== String(ref)) continue
+      touched = true
+      changes[field.field] = media ? String(media.id) : ''
+      changes[field.imageField] = media ? media.src : ''
+    }
+    return touched
+  }
+  function uploadedImage(shopUrl, ref) {
+    const row = database.prepare('SELECT id, filename, state, media_id AS mediaId, source_url AS sourceUrl FROM media_uploads WHERE shop_url = ? AND id = ?').get(shopUrl, -ref)
+    if (!row) throw new Error('Produkt: Ein vorgemerktes Bild wurde nicht gefunden. Bitte erneut hochladen.')
+    return row
+  }
+  // Images of an edit: pending uploads stay -id, finished ones get their media library ID.
+  function resolveImage(shopUrl, image) {
+    if (!image || image.id > 0) return image
+    const row = uploadedImage(shopUrl, image.id)
+    return row.state === 'done' ? { ...image, id: row.mediaId, src: row.sourceUrl ?? '' } : { ...image, src: '', name: image.name || row.filename }
   }
 
   function transaction(action) {
@@ -1140,6 +1193,8 @@ function openDatabase(filename) {
             if (definition.type === 'select' && !definition.options.some((option) => option.value === value)) throw new Error(`Produkt: ${definition.label} ist ungueltig.`)
             if (definition.type === 'url' && value && !/^https?:\/\/[^\s]+$/i.test(value)) throw new Error(`Produkt: ${definition.label} muss eine vollstaendige Adresse sein (https://...).`)
             if (definition.type === 'primaryTerm' && value && !/^\d+$/.test(value)) throw new Error(`Produkt: ${definition.label} ist ungueltig.`)
+            if (definition.type === 'image' && value && !/^https?:\/\/[^\s]+$/i.test(value)) throw new Error(`Produkt: ${definition.label} ist ungueltig.`)
+            if (definition.type === 'mediaId' && value && !/^-?\d+$/.test(value)) throw new Error(`Produkt: ${definition.label} ist ungueltig.`)
             if (definition.type === 'flags') {
               // Several options in one comma-separated value, stored in the order of the options.
               const flags = value.split(',').map((entry) => entry.trim()).filter((entry) => entry && !(definition.empty ?? []).includes(entry))
@@ -1151,11 +1206,18 @@ function openDatabase(filename) {
             continue
           }
           const definition = scalarFields[field]
-          if (!definition || (variation && !definition.variation)) throw new Error(`Produktfeld ${field} kann nicht bearbeitet werden.`)
+          if (!definition || (variation && !definition.variation) || (!variation && definition.product === false)) throw new Error(`Produktfeld ${field} kann nicht bearbeitet werden.`)
           const value = definition.schema.safeParse(raw)
           if (!value.success) throw new Error(`Produkt: ${definition.label} ist ungueltig. ${value.error.issues[0]?.message ?? ''}`.trim())
           if (field === 'status' && variation && !variationStatuses.has(value.data)) throw new Error('Produkt: Varianten koennen nur veroeffentlicht oder privat sein.')
-          next[field] = value.data
+          next[field] = field === 'images' ? value.data.map((image) => resolveImage(shopUrl, image)) : field === 'image' ? resolveImage(shopUrl, value.data) : value.data
+        }
+        // Image ID meta pointing to an upload: finished uploads get their media ID and URL, pending ones must exist.
+        for (const [field, definition] of metaDefinitions) {
+          if (definition.type !== 'mediaId' || !(field in next) || !/^-\d+$/.test(next[field])) continue
+          const row = uploadedImage(shopUrl, Number(next[field]))
+          if (row.state === 'done') { next[field] = String(row.mediaId); next[definition.imageField] = row.sourceUrl ?? '' }
+          else next[definition.imageField] = ''
         }
         // Term fields are stored in the shop's own format ({ id, name, slug }) so the merged payload stays readable.
         const termFields = new Map(termFieldTaxonomies(shopUrl).filter((field) => field.scope === (variation ? 'variation' : 'product')).map((field) => [field.field, field]))
@@ -1247,6 +1309,7 @@ function openDatabase(filename) {
     retryProductChanges(input) {
       const parsed = z.object({ shopUrl: shopUrlSchema }).strict().parse(input)
       database.prepare("UPDATE product_changes SET state = 'pending', error = NULL WHERE shop_url = ? AND state = 'failed'").run(parsed.shopUrl)
+      database.prepare("UPDATE media_uploads SET state = 'pending', error = NULL WHERE shop_url = ? AND state = 'failed'").run(parsed.shopUrl)
       return true
     },
     pendingProductChanges(input) {
@@ -1286,6 +1349,53 @@ function openDatabase(filename) {
       const parsed = z.object({ changeId: z.number().int().positive(), revision: z.number().int().nonnegative(), state: z.enum(['failed', 'conflict']), error: z.string().max(500).nullable().default(null), remote: z.record(z.string(), z.unknown()).nullable().default(null) }).strict().parse(input)
       database.prepare('UPDATE product_changes SET state = ?, error = ?, remote = ? WHERE id = ? AND revision = ?').run(parsed.state, parsed.error, parsed.remote ? JSON.stringify(parsed.remote) : null, parsed.changeId, parsed.revision)
       return true
+    },
+    addMediaUpload(input) {
+      const parsed = z.object({
+        shopUrl: shopUrlSchema, file: z.string().regex(/^[a-f0-9-]{36}\.(jpg|png|gif|webp)$/), filename: z.string().min(1).max(255),
+        mime: z.enum(['image/jpeg', 'image/png', 'image/gif', 'image/webp']), size: z.number().int().positive().max(20 * 1024 * 1024),
+        thumbnail: z.string().startsWith('data:image/').max(400_000).nullable(),
+      }).strict().parse(input)
+      const row = database.prepare('INSERT INTO media_uploads (shop_url, file, filename, mime, size, thumbnail, created_at) VALUES (?, ?, ?, ?, ?, ?, ?) RETURNING id')
+        .get(parsed.shopUrl, parsed.file, parsed.filename, parsed.mime, parsed.size, parsed.thumbnail, new Date().toISOString())
+      return { id: -row.id, name: parsed.filename, thumbnail: parsed.thumbnail, state: 'pending', error: null }
+    },
+    // Uploads that have not reached the shop yet, with their preview for the editor.
+    listMediaUploads(input) {
+      const parsed = z.object({ shopUrl: shopUrlSchema }).strict().parse(input)
+      return database.prepare("SELECT -id AS id, filename AS name, thumbnail, state, error FROM media_uploads WHERE shop_url = ? AND state != 'done' ORDER BY id DESC").all(parsed.shopUrl)
+    },
+    pendingMediaUploads(input) {
+      const parsed = z.object({ shopUrl: shopUrlSchema }).strict().parse(input)
+      return database.prepare("SELECT id, file, filename, mime FROM media_uploads WHERE shop_url = ? AND state = 'pending' ORDER BY id").all(parsed.shopUrl)
+    },
+    // The shop has the file: queued edits get the real media ID (internal bookkeeping, revisions stay).
+    completeMediaUpload(input) {
+      const parsed = z.object({ uploadId: z.number().int().positive(), mediaId: z.number().int().positive(), sourceUrl: z.string().url().max(2048) }).strict().parse(input)
+      return transaction(() => {
+        const upload = database.prepare('SELECT shop_url AS shopUrl, file, filename FROM media_uploads WHERE id = ?').get(parsed.uploadId)
+        if (!upload) return null
+        database.prepare("UPDATE media_uploads SET state = 'done', media_id = ?, source_url = ?, error = NULL, thumbnail = NULL WHERE id = ?").run(parsed.mediaId, parsed.sourceUrl, parsed.uploadId)
+        const update = database.prepare('UPDATE product_changes SET changes = ? WHERE id = ?')
+        for (const row of database.prepare('SELECT id, changes FROM product_changes WHERE shop_url = ?').all(upload.shopUrl)) {
+          const changes = JSON.parse(row.changes)
+          if (rewriteUploadRefs(changes, -parsed.uploadId, { id: parsed.mediaId, src: parsed.sourceUrl })) update.run(JSON.stringify(changes), row.id)
+        }
+        return upload
+      })
+    },
+    // Rejected by the shop: the upload and every edit that needs it are shown as failed (retry resets both).
+    failMediaUpload(input) {
+      const parsed = z.object({ uploadId: z.number().int().positive(), error: z.string().max(500) }).strict().parse(input)
+      return transaction(() => {
+        const upload = database.prepare('SELECT shop_url AS shopUrl, filename FROM media_uploads WHERE id = ?').get(parsed.uploadId)
+        if (!upload) return null
+        database.prepare("UPDATE media_uploads SET state = 'failed', error = ? WHERE id = ?").run(parsed.error, parsed.uploadId)
+        const fail = database.prepare("UPDATE product_changes SET state = 'failed', error = ? WHERE id = ?")
+        for (const row of database.prepare("SELECT id, changes FROM product_changes WHERE shop_url = ? AND state = 'pending'").all(upload.shopUrl))
+          if (rewriteUploadRefs(JSON.parse(row.changes), -parsed.uploadId, null)) fail.run(`Bild „${upload.filename}“ konnte nicht hochgeladen werden: ${parsed.error}`.slice(0, 500), row.id)
+        return upload
+      })
     },
     appendAudit(input) {
       const entry = auditEntrySchema.parse(input)

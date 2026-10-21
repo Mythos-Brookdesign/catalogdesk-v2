@@ -79,6 +79,9 @@ contextBridge.exposeInMainWorld('catalogDesk', {
   listModules: () => authorized('catalog:v2:modules-list'),
   setModuleEnabled: (moduleId, enabled) => authorized('catalog:v2:modules-set', { moduleId, enabled }),
   detectModules: () => authorized('catalog:v2:modules-detect'),
+  listMediaLibrary: (query) => authorized('catalog:v2:media-library', query),
+  listPendingMedia: () => authorized('catalog:v2:media-pending'),
+  uploadMedia: (file) => authorized('catalog:v2:media-upload', file),
   onAuditAppended: (listener) => { auditListeners.add(listener); return () => auditListeners.delete(listener) },
   onTaxonomyImportProgress: (listener) => { taxonomyProgressListeners.add(listener); return () => taxonomyProgressListeners.delete(listener) },
 })

@@ -30,7 +30,8 @@ function createShopStore(directory, encryption, platform = process.platform) {
   }
   return {
     load: () => serial(load),
-    summary: () => serial(async () => { const saved = await load(); return saved ? { url: saved.url } : null }),
+    // Never the secrets: only whether an application password (and for which user) is stored.
+    summary: () => serial(async () => { const saved = await load(); return saved ? { url: saved.url, wpUser: saved.wpUser ?? null } : null }),
     save: (input) => serial(async () => {
       const parsed = connectionSchema.safeParse(input)
       if (!parsed.success) throw new Error('Ungueltige Shopverbindung.')

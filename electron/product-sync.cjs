@@ -1,6 +1,6 @@
 const { WooError, normalizeUrl, wooRequest } = require('./shop.cjs')
 const { toProduct } = require('./products.cjs')
-const { fieldValue, same, toRequestBody } = require('./product-fields.cjs')
+const { fieldValue, isMetaField, same, toRequestBody } = require('./product-fields.cjs')
 
 // Sends queued product edits. Before writing, the product is read from the shop: a field that was changed
 // there since the edit was based on it (e.g. stock after an order) is a conflict and is not overwritten.
@@ -9,8 +9,10 @@ async function syncProductChanges(connection, database, fetcher) {
   const shopUrl = normalizeUrl(connection.url)
   const result = { synced: 0, failed: 0, conflicts: 0, offline: false, changes: [] }
   for (const change of await database('pendingProductChanges', { shopUrl })) {
-    // References a term created offline that has not reached the shop yet; send on a later run.
-    if (Object.values(change.changes).some((value) => (Array.isArray(value) ? value : [value]).some((entry) => entry && typeof entry === 'object' && Number(entry.id) < 0))) continue
+    // References a term created offline or an image upload that has not reached the shop yet; send on a later run.
+    // Module image ID meta (e.g. Yoast's social image) holds a pending upload as "-id".
+    if (Object.entries(change.changes).some(([field, value]) => (Array.isArray(value) ? value : [value]).some((entry) =>
+      entry && typeof entry === 'object' ? Number(entry.id) < 0 : isMetaField(field) && typeof entry === 'string' && /^-\d+$/.test(entry)))) continue
     const route = change.parentId ? `wc/v3/products/${change.parentId}/variations/${change.productId}` : `wc/v3/products/${change.productId}`
     const record = (outcome, extra = {}) => result.changes.push({ productId: change.productId, name: change.name, variation: Boolean(change.parentId), fields: Object.keys(change.changes), outcome, ...extra })
     try {

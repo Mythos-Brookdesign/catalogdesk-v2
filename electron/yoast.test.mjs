@@ -80,9 +80,11 @@ it('validates social, robots and schema fields and stores robots flags in a fixe
   const { database } = setup()
   try {
     const fields = database.productEditorOptions({ shopUrl }).metaFields
-    expect(fields.filter((field) => field.group === 'Social').map((field) => field.field)).toEqual([
-      'meta:_yoast_wpseo_opengraph-title', 'meta:_yoast_wpseo_opengraph-description', 'meta:_yoast_wpseo_twitter-title', 'meta:_yoast_wpseo_twitter-description',
+    expect(fields.filter((field) => field.group === 'Social' && !field.hidden).map((field) => field.field)).toEqual([
+      'meta:_yoast_wpseo_opengraph-title', 'meta:_yoast_wpseo_opengraph-description', 'meta:_yoast_wpseo_opengraph-image',
+      'meta:_yoast_wpseo_twitter-title', 'meta:_yoast_wpseo_twitter-description', 'meta:_yoast_wpseo_twitter-image',
     ])
+    expect(fields.find((field) => field.field === 'meta:_yoast_wpseo_opengraph-image-id')).toMatchObject({ type: 'mediaId', hidden: true, imageField: 'meta:_yoast_wpseo_opengraph-image' })
     const change = (values) => database.queueProductChange({ shopUrl, productId: 60, values, terms: {} })
     expect(() => change({ 'meta:_yoast_wpseo_meta-robots-adv': 'noimageindex,noindex' })).toThrow('Weitere Robots-Angaben ist ungueltig')
     expect(() => change({ 'meta:_yoast_wpseo_schema_page_type': 'Blog' })).toThrow('ungueltig')

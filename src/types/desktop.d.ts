@@ -22,8 +22,8 @@ export type LocalProduct = {
 export type ProductChangeCounts = { pending: number; failed: number; conflict: number }
 export type ProductTermField = { scope: 'product' | 'variation'; field: string; multiple: boolean; taxonomy: string; label: string; hierarchical: boolean; section: string | null; editable: boolean; terms: TaxonomyTermOption[] }
 export type ProductMetaField = {
-  field: string; meta: string; label: string; type: 'text' | 'textarea' | 'html' | 'url' | 'select' | 'flags' | 'primaryTerm'; section: string; module: string; scopes: ('product' | 'variation')[]
-  recommended?: number; minimum?: number; hint?: string; of?: string; ofLabel?: string; group?: string; empty?: string[]; options?: { value: string; label: string }[]
+  field: string; meta: string; label: string; type: 'text' | 'textarea' | 'html' | 'url' | 'select' | 'flags' | 'primaryTerm' | 'image' | 'mediaId'; section: string; module: string; scopes: ('product' | 'variation')[]
+  recommended?: number; minimum?: number; hint?: string; of?: string; ofLabel?: string; group?: string; empty?: string[]; hidden?: boolean; idField?: string; imageField?: string; options?: { value: string; label: string }[]
 }
 export type ProductPreview = { type: 'search-snippet'; module: string; section: string; title: string | null; description: string | null }
 export type ProductEditorOptions = { termFields: ProductTermField[]; shippingClasses: { slug: string; name: string }[]; metaFields: ProductMetaField[]; previews: ProductPreview[] }
@@ -69,6 +69,10 @@ export type CatalogUser = {
 }
 export type MenuSection = 'dashboard' | 'products' | 'orders' | 'customers' | 'settings' | 'users' | 'shop' | 'taxonomies' | 'sync' | 'history' | 'plugins'
 export type UserInput = AdminProfile & { id?: string; role: CatalogUser['role']; permissions: MenuSection[] }
+// Image as WooCommerce stores it on a product; a negative ID is an upload that waits for the shop.
+export type ProductImage = { id: number; src: string; name: string; alt: string }
+export type MediaItem = { id: number; src: string; thumb: string; alt: string; name: string }
+export type PendingMedia = { id: number; name: string; thumbnail: string | null; state: 'pending' | 'failed'; error: string | null }
 export type UserResult<Value> = { ok: true; value: Value } | { ok: false; error: string }
 
 export type AuthState = {
@@ -87,8 +91,8 @@ export type AdminProfile = {
   username: string
   password: string
 }
-export type ShopConnectionInput = { url: string; consumerKey: string; consumerSecret: string }
-export type ShopConnectionCheck = { url: string; productCount: number; checkedAt: string }
+export type ShopConnectionInput = { url: string; consumerKey: string; consumerSecret: string; wpUser: string; wpAppPassword: string }
+export type ShopConnectionCheck = { url: string; productCount: number; checkedAt: string; media: { ok: true; user: string } | { ok: false; error: string } | null }
 export type Theme = 'light' | 'dark'
 export type ProductImportProgress = { step: 'taxonomies' | 'products' | 'variations' | 'saving'; label: string; completed: number; total: number }
 export type TaxonomyKind = 'core' | 'custom' | 'attribute'
@@ -140,7 +144,7 @@ declare global {
     catalogDesk?: {
       getTheme: () => Promise<UserResult<Theme>>
       setTheme: (theme: Theme) => Promise<UserResult<Theme>>
-      shopConnection: () => Promise<UserResult<{ url: string } | null>>
+      shopConnection: () => Promise<UserResult<{ url: string; wpUser: string | null } | null>>
       saveShopConnection: (input: ShopConnectionInput) => Promise<UserResult<{ url: string }>>
       testShopConnection: (input: ShopConnectionInput | null) => Promise<UserResult<ShopConnectionCheck>>
       deleteShopConnection: () => Promise<UserResult<boolean>>
@@ -175,6 +179,9 @@ declare global {
       listModules: () => Promise<UserResult<{ shopUrl: string | null; checked: boolean; modules: PluginModule[] }>>
       setModuleEnabled: (moduleId: string, enabled: boolean) => Promise<UserResult<PluginModule>>
       detectModules: () => Promise<UserResult<{ shopUrl: string | null; checked: boolean; modules: PluginModule[]; changes: { added: string[]; deactivated: string[]; removed: string[] } }>>
+      listMediaLibrary: (query: { search?: string; page?: number }) => Promise<UserResult<{ items: MediaItem[]; page: number; pages: number; canUpload: boolean }>>
+      listPendingMedia: () => Promise<UserResult<PendingMedia[]>>
+      uploadMedia: (file: { name: string; type: string; data: Uint8Array }) => Promise<UserResult<PendingMedia>>
       onAuditAppended: (listener: () => void) => () => void
       onTaxonomyImportProgress: (listener: (progress: TaxonomyImportProgress) => void) => () => void
     }

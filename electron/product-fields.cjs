@@ -2,6 +2,13 @@ const { z } = require('zod')
 
 // Editable WooCommerce product fields shared by validation, conflict checks, sync and history.
 const decimal = z.string().trim().transform((value) => value.replace(',', '.')).pipe(z.string().regex(/^(\d{1,12}(\.\d{1,6})?)?$/, 'Bitte eine Zahl eingeben.'))
+// Media library image as WooCommerce returns it; a negative ID is an upload that waits for the shop.
+const imageSchema = z.object({
+  id: z.number().int().refine((id) => id !== 0, 'Ungueltiges Bild.'),
+  src: z.string().max(2048).default(''),
+  name: z.string().max(500).default(''),
+  alt: z.string().trim().max(1000).default(''),
+}).strip()
 const scalarFields = {
   name: { label: 'Name', variation: false, schema: z.string().trim().min(1, 'Der Name darf nicht leer sein.').max(1000) },
   sku: { label: 'Artikelnummer', variation: true, schema: z.string().trim().max(100) },
@@ -16,6 +23,9 @@ const scalarFields = {
   weight: { label: 'Gewicht', variation: true, schema: decimal },
   dimensions: { label: 'Masse (L x B x H)', variation: true, schema: z.object({ length: decimal, width: decimal, height: decimal }).strict() },
   shipping_class: { label: 'Versandklasse', variation: true, schema: z.string().max(200) },
+  // First image is the product image, the rest the gallery. Variations have a single image instead.
+  images: { label: 'Produktbilder', variation: false, schema: z.array(imageSchema).max(50).refine((list) => new Set(list.map((image) => image.id)).size === list.length, 'Jedes Bild nur einmal.') },
+  image: { label: 'Variantenbild', variation: true, product: false, schema: imageSchema.nullable() },
 }
 const variationStatuses = new Set(['publish', 'private'])
 const termFieldName = /^[a-z0-9_]{1,80}$/
@@ -33,12 +43,18 @@ function fieldValue(item, field) {
   return entry ? entry.value ?? null : null
 }
 
+// Images carry `src`, terms do not. Checked first: image order matters, term order does not.
+const isImage = (value) => Boolean(value) && typeof value === 'object' && !Array.isArray(value) && 'id' in value && 'src' in value
+const isImageList = (value) => Array.isArray(value) && value.length > 0 && value.every(isImage)
 const isTermList = (value) => Array.isArray(value) && value.every((entry) => entry && typeof entry === 'object' && 'id' in entry)
 const isTerm = (value) => value && typeof value === 'object' && !Array.isArray(value) && 'id' in value
+const imageKey = (image) => (Number(image.id) ? `${Number(image.id)}|${String(image.alt ?? '').trim()}` : '')
 
 // Canonical form for comparisons: shop and app format numbers, empty values and term objects differently.
 function normalize(value) {
   if (value === null || value === undefined || value === '') return ''
+  if (isImageList(value)) return value.map(imageKey).join(',')
+  if (isImage(value)) return imageKey(value)
   // Negative IDs are terms created offline and count like real ones; 0 means "no term".
   if (isTermList(value)) return value.map((entry) => Number(entry.id)).filter((id) => Number.isFinite(id) && id !== 0).sort((a, b) => a - b).join(',')
   if (isTerm(value)) return Number(value.id) ? String(Number(value.id)) : ''
@@ -55,6 +71,9 @@ function toRequestBody(changes) {
   const meta = []
   const body = Object.fromEntries(Object.entries(changes).flatMap(([field, value]) => {
     if (isMetaField(field)) { meta.push({ key: field.slice(metaPrefix.length), value: value ?? '' }); return [] }
+    // Images by ID in their order; WooCommerce sets a non-empty alt text on the attachment. { id: 0 } removes a variation image.
+    if (field === 'images') return [[field, value.map((image) => ({ id: image.id, ...(image.alt ? { alt: image.alt } : {}) }))]]
+    if (field === 'image') return [[field, value && value.id > 0 ? { id: value.id, ...(value.alt ? { alt: value.alt } : {}) } : { id: 0 }]]
     if (isTermList(value)) return [[field, value.map((entry) => ({ id: entry.id }))]]
     if (isTerm(value)) return [[field, { id: value.id }]]
     return [[field, value]]
@@ -65,6 +84,10 @@ function toRequestBody(changes) {
 // Readable values for the history and conflict views.
 function display(field, value) {
   if (value === null || value === undefined || value === '') return null
+  if (field === 'images' || field === 'image') {
+    const images = (Array.isArray(value) ? value : [value]).filter((image) => image && Number(image.id))
+    return images.map((image) => image.name || (image.id < 0 ? 'Neues Bild' : `#${image.id}`)).join(', ') || null
+  }
   if (isTermList(value)) return value.map((entry) => entry.name ?? `#${entry.id}`).join(', ') || null
   if (isTerm(value)) return Number(value.id) > 0 ? value.name ?? `#${value.id}` : null
   if (field === 'dimensions') return ['length', 'width', 'height'].map((key) => value[key] || '–').join(' x ')
@@ -79,4 +102,4 @@ function display(field, value) {
   return String(value)
 }
 
-module.exports = { scalarFields, variationStatuses, termFieldName, metaPrefix, isMetaField, fieldValue, isTerm, isTermList, normalize, same, toRequestBody, display }
+module.exports = { scalarFields, variationStatuses, termFieldName, metaPrefix, isMetaField, fieldValue, isImage, isTerm, isTermList, normalize, same, toRequestBody, display }

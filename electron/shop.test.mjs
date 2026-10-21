@@ -32,13 +32,35 @@ it('preserves saved keys only for the same HTTPS shop and requires complete repl
   expect(shop.resolveConnection({ ...connection, consumerSecret: 'cs_' + 'c'.repeat(40) }, connection).consumerSecret).toBe('cs_' + 'c'.repeat(40))
 })
 
+it('keeps, replaces and removes the WordPress application password', () => {
+  const password = 'abcd EFGH 1234 ijkl MNOP 5678'
+  const withLogin = shop.resolveConnection({ url: connection.url, consumerKey: '', consumerSecret: '', wpUser: 'redaktion', wpAppPassword: password }, connection)
+  expect(withLogin).toMatchObject({ wpUser: 'redaktion', wpAppPassword: 'abcdEFGH1234ijklMNOP5678', consumerKey: connection.consumerKey })
+  // Empty password keeps the stored one of the same user; another user needs a new one; no user removes it.
+  expect(shop.resolveConnection({ url: connection.url, consumerKey: '', consumerSecret: '', wpUser: 'redaktion' }, withLogin).wpAppPassword).toBe('abcdEFGH1234ijklMNOP5678')
+  expect(() => shop.resolveConnection({ url: connection.url, consumerKey: '', consumerSecret: '', wpUser: 'admin' }, withLogin)).toThrow('Anwendungspasswort')
+  expect(shop.resolveConnection({ url: connection.url, consumerKey: '', consumerSecret: '' }, withLogin)).toEqual(connection)
+  expect(() => shop.resolveConnection({ url: connection.url, consumerKey: '', consumerSecret: '', wpUser: 'redaktion', wpAppPassword: 'zu kurz' }, connection)).toThrow('24 Zeichen')
+})
+
+it('uploads files with the application password and never sends WooCommerce keys to WordPress routes', async () => {
+  const login = { ...connection, wpUser: 'redaktion', wpAppPassword: 'abcdEFGH1234ijklMNOP5678' }
+  const fetcher = vi.fn(async () => new Response(JSON.stringify({ id: 9 }), { headers: { 'content-type': 'application/json' } }))
+  await shop.wooRequest(login, 'wp/v2/media', {}, fetcher, { method: 'POST', wordpress: true, upload: { data: Buffer.from('x'), contentType: 'image/png', filename: 'Grüne Tasse.png' } })
+  const [, options] = fetcher.mock.calls[0]
+  expect(options.headers.Authorization).toBe(`Basic ${Buffer.from('redaktion:abcdEFGH1234ijklMNOP5678').toString('base64')}`)
+  expect(options.headers['Content-Type']).toBe('image/png')
+  expect(options.headers['Content-Disposition']).toBe(`attachment; filename="Grune-Tasse.png"; filename*=UTF-8''${encodeURIComponent('Grüne Tasse.png')}`)
+  await expect(shop.wooRequest(connection, 'wp/v2/media', {}, fetcher, { wordpress: true })).rejects.toThrow('Kein Anwendungspasswort')
+})
+
 it('stores only encrypted keys, supports replacement and keeps the last valid file on errors', async () => {
   const directory = await mkdtemp(path.join(os.tmpdir(), 'catalogdesk-v2-shop-'))
   directories.push(directory)
   const store = storage.createShopStore(directory, encryption, 'darwin')
   expect(await store.summary()).toBeNull()
   await store.save(connection)
-  expect(await store.summary()).toEqual({ url: connection.url })
+  expect(await store.summary()).toEqual({ url: connection.url, wpUser: null })
   const filename = path.join(directory, 'shop-connection.enc')
   const bytes = await readFile(filename)
   expect(bytes.includes(Buffer.from(connection.consumerSecret))).toBe(false)

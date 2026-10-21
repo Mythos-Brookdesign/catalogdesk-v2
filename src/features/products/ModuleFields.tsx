@@ -1,6 +1,8 @@
 import { Fragment } from 'react'
-import type { ProductMetaField, ProductPreview, ProductTermField } from '../../types/desktop'
+import type { PendingMedia, ProductMetaField, ProductPreview, ProductTermField } from '../../types/desktop'
 import { RichTextField } from './RichTextField'
+import { SingleImageField } from './ProductImages'
+import type { PendingMap } from './media'
 
 const plain = (html: string) => new DOMParser().parseFromString(html, 'text/html').body.textContent?.replace(/\s+/g, ' ').trim() ?? ''
 
@@ -38,9 +40,10 @@ function SearchSnippet({ preview, values, productName, shortDescription, permali
 }
 
 // Editor sections of plugin modules that store product meta (e.g. Yoast SEO).
-export function ModuleFields({ fields, previews, values, onChange, termFields, selectedTerms, productName, shortDescription, permalink, siteName, disabled = false }: {
+export function ModuleFields({ fields, previews, values, onChange, termFields, selectedTerms, productName, shortDescription, permalink, siteName, disabled = false, pending, onPendingAdded }: {
   fields: ProductMetaField[]; previews: ProductPreview[]; values: Record<string, string>; onChange: (field: string, value: string) => void
   termFields: ProductTermField[]; selectedTerms: Record<string, number[]>; productName: string; shortDescription: string; permalink: string; siteName: string; disabled?: boolean
+  pending: PendingMap; onPendingAdded: (entry: PendingMedia) => void
 }) {
   const sections = [...new Set(fields.map((field) => field.section))]
   // Length hints count what search engines show: the resolved title and description.
@@ -53,7 +56,7 @@ export function ModuleFields({ fields, previews, values, onChange, termFields, s
   return <>{sections.map((section) => <section key={section} className="product-editor-section" aria-label={section}>
     <h3>{section}</h3>
     {previews.filter((preview) => preview.section === section).map((preview) => <SearchSnippet key={preview.module} preview={preview} values={values} productName={productName} shortDescription={shortDescription} permalink={permalink} siteName={siteName} />)}
-    {fields.filter((field) => field.section === section).map((field, index, inSection) => {
+    {fields.filter((field) => field.section === section && !field.hidden).map((field, index, inSection) => {
       const value = values[field.field] ?? ''
       // Sub-heading where a module's field group starts (e.g. Yoast's "Social" and "Erweitert").
       const heading = field.group && field.group !== inSection[index - 1]?.group ? <h4 key={`group-${field.group}`} className="meta-group">{field.group}</h4> : null
@@ -62,6 +65,13 @@ export function ModuleFields({ fields, previews, values, onChange, termFields, s
   </section>)}</>
 
   function fieldInput(field: ProductMetaField, value: string) {
+    if (field.type === 'image' && field.idField) {
+      // URL and media ID are always set together; a negative ID is an upload that waits for the shop.
+      const id = Number(values[field.idField] ?? '')
+      const image = id || value ? { id: id || 0, src: value, name: '', alt: '' } : null
+      return <SingleImageField label={field.label} image={image} pending={pending} onPendingAdded={onPendingAdded} disabled={disabled} hint={field.hint}
+        onChange={(next) => { onChange(field.field, next && next.id > 0 ? next.src : ''); onChange(field.idField!, next ? String(next.id) : '') }} />
+    }
     if (field.type === 'html') return <div className="meta-field">
       <RichTextField label={field.label} compact disabled={disabled} value={value} onChange={(html) => onChange(field.field, html)} />
       {field.hint && <small className="taxonomy-hint">{field.hint}</small>}

@@ -18,6 +18,9 @@ export function ShopConnectionPage({ onConnectionChange }: { onConnectionChange?
   const [savedUrl, setSavedUrl] = useState<string | null>(null)
   const [consumerKey, setConsumerKey] = useState('')
   const [consumerSecret, setConsumerSecret] = useState('')
+  const [wpUser, setWpUser] = useState('')
+  const [savedWpUser, setSavedWpUser] = useState<string | null>(null)
+  const [wpAppPassword, setWpAppPassword] = useState('')
   const [visible, setVisible] = useState(false)
   const [loading, setLoading] = useState(Boolean(desktop))
   const [action, setAction] = useState<'save' | 'test' | 'delete' | null>(null)
@@ -25,13 +28,16 @@ export function ShopConnectionPage({ onConnectionChange }: { onConnectionChange?
   const busy = loading || action !== null
   const reuse = Boolean(savedUrl && canonicalUrl(url) === savedUrl && !consumerKey && !consumerSecret)
   const canSubmit = Boolean(url.trim() && (reuse || (consumerKey && consumerSecret)))
+  // A stored application password is kept while the user name stays the same and the field is left empty.
+  const wpReuse = Boolean(savedWpUser && wpUser.trim() === savedWpUser && !wpAppPassword)
+  const wpChanged = wpUser.trim() !== (savedWpUser ?? '') || Boolean(wpAppPassword)
 
   useEffect(() => {
     if (!desktop) return
     let cancelled = false
     desktop.shopConnection().then((result) => {
       if (cancelled) return
-      if (result.ok) { setSavedUrl(result.value?.url ?? null); setUrl(result.value?.url ?? '') }
+      if (result.ok) { setSavedUrl(result.value?.url ?? null); setUrl(result.value?.url ?? ''); setSavedWpUser(result.value?.wpUser ?? null); setWpUser(result.value?.wpUser ?? '') }
       else notify.error('Shopverbindung nicht geladen', { message: result.error })
     }).catch(() => {
       if (!cancelled) notify.error('Shopverbindung nicht geladen', { message: 'Die gespeicherte Verbindung konnte nicht gelesen werden.' })
@@ -43,21 +49,24 @@ export function ShopConnectionPage({ onConnectionChange }: { onConnectionChange?
     if (!desktop || busy) return
     setAction(operation)
     try {
-      const input = { url: url.trim(), consumerKey: consumerKey.trim(), consumerSecret: consumerSecret.trim() }
+      const input = { url: url.trim(), consumerKey: consumerKey.trim(), consumerSecret: consumerSecret.trim(), wpUser: wpUser.trim(), wpAppPassword }
       if (operation === 'save') {
         const result = await desktop.saveShopConnection(input)
         if (!result.ok) throw new Error(result.error)
         setSavedUrl(result.value.url); setUrl(result.value.url); onConnectionChange?.(result.value.url)
-        setConsumerKey(''); setConsumerSecret(''); setVisible(false)
+        setConsumerKey(''); setConsumerSecret(''); setWpAppPassword(''); setSavedWpUser(wpUser.trim() || null); setVisible(false)
         notify.success('Shopverbindung gespeichert', { message: result.value.url, key: 'shop' })
       } else if (operation === 'test') {
-        const result = await desktop.testShopConnection(reuse ? null : input)
+        const result = await desktop.testShopConnection(reuse && !wpChanged ? null : input)
         if (!result.ok) throw new Error(result.error)
-        notify.success('Verbindung erfolgreich', { message: `${result.value.productCount.toLocaleString('de-DE')} Produkte in der WooCommerce-API · ${result.value.url}`, key: 'shop' })
+        const message = `${result.value.productCount.toLocaleString('de-DE')} Produkte in der WooCommerce-API · ${result.value.url}`
+        const media = result.value.media
+        if (media && !media.ok) notify.warning('WooCommerce erreichbar, Bild-Upload nicht', { message: `${message}. ${media.error}`, key: 'shop' })
+        else notify.success('Verbindung erfolgreich', { message: media ? `${message} · Bild-Upload als ${media.user} moeglich` : message, key: 'shop' })
       } else {
         const result = await desktop.deleteShopConnection()
         if (!result.ok) throw new Error(result.error)
-        setSavedUrl(null); setUrl(''); onConnectionChange?.(null); setConsumerKey(''); setConsumerSecret(''); setVisible(false)
+        setSavedUrl(null); setUrl(''); onConnectionChange?.(null); setConsumerKey(''); setConsumerSecret(''); setWpUser(''); setSavedWpUser(null); setWpAppPassword(''); setVisible(false)
         setConfirmDelete(false); notify.info('Shopverbindung entfernt', { message: 'Die API-Schluessel wurden lokal geloescht. Katalogdaten bleiben erhalten.', key: 'shop' })
       }
     } catch (reason) {
@@ -78,6 +87,12 @@ export function ShopConnectionPage({ onConnectionChange }: { onConnectionChange?
           <label className="auth-field"><span>Shopadresse (HTTPS)</span><input required type="url" maxLength={2048} placeholder="https://shop.example" autoComplete="off" spellCheck={false} value={url} onChange={(event) => { setUrl(event.target.value) }} /></label>
           <label className="auth-field"><span>Consumer Key</span><input required={!reuse} type={visible ? 'text' : 'password'} maxLength={43} pattern="ck_[a-f0-9]{40}" autoComplete="off" autoCapitalize="none" spellCheck={false} placeholder={reuse ? 'Gespeichert' : 'ck_...'} value={consumerKey} onChange={(event) => { setConsumerKey(event.target.value) }} /></label>
           <label className="auth-field"><span>Consumer Secret</span><input required={!reuse} type={visible ? 'text' : 'password'} maxLength={43} pattern="cs_[a-f0-9]{40}" autoComplete="off" autoCapitalize="none" spellCheck={false} placeholder={reuse ? 'Gespeichert' : 'cs_...'} value={consumerSecret} onChange={(event) => { setConsumerSecret(event.target.value) }} /></label>
+          <div className="shop-settings-subsection">
+            <h3>Bilder hochladen (optional)</h3>
+            <p>WooCommerce-Schluessel reichen nicht, um Bilder in die WordPress-Mediathek hochzuladen. Dafuer in WordPress unter Benutzer → Profil → Anwendungspasswoerter ein Passwort fuer CatalogDesk erzeugen. Ohne bleibt die Auswahl aus der vorhandenen Mediathek moeglich.</p>
+          </div>
+          <label className="auth-field"><span>WordPress-Benutzername (leer = kein Upload)</span><input maxLength={60} autoComplete="off" autoCapitalize="none" spellCheck={false} value={wpUser} onChange={(event) => { setWpUser(event.target.value) }} /></label>
+          <label className="auth-field"><span>Anwendungspasswort</span><input type={visible ? 'text' : 'password'} maxLength={60} autoComplete="off" autoCapitalize="none" spellCheck={false} disabled={!wpUser.trim()} placeholder={wpReuse ? 'Gespeichert' : 'xxxx xxxx xxxx xxxx xxxx xxxx'} value={wpAppPassword} onChange={(event) => { setWpAppPassword(event.target.value) }} /></label>
           <div className="shop-settings-actions"><button className="icon-button" type="button" title={visible ? 'Schluessel verbergen' : 'Schluessel anzeigen'} aria-label={visible ? 'Schluessel verbergen' : 'Schluessel anzeigen'} aria-pressed={visible} onClick={() => setVisible((current) => !current)}>{visible ? <EyeOff size={17} /> : <Eye size={17} />}</button>
             <button className="button" type="button" disabled={!canSubmit} onClick={() => void run('test')}><PlugZap size={16} />Verbindung pruefen</button>
             <button className="button primary" type="submit" disabled={!canSubmit}><Save size={16} />Verbindung speichern</button>

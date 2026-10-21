@@ -3,6 +3,7 @@ import { Boxes, ChevronDown, ChevronLeft, ChevronRight, CloudOff, DownloadCloud,
 import { productFieldLabels, productPrice, productFieldValue, productStatusLabels, productStock, productTypeLabels, type ProductPage, type ProductSummary } from './model'
 import type { ProductChangeResult, ProductEditorOptions, ProductImportProgress, ProductTermField, TaxonomyTermOption, WorkspaceSummary } from '../../types/desktop'
 import { ProductEditor, type NewTerm } from './ProductEditor'
+import { toProductImage } from './media'
 import { useNotify } from '../../components/notifications/notifications'
 import './ProductsPage.css'
 
@@ -16,6 +17,13 @@ function Price({ product, currency }: { product: ProductSummary; currency?: stri
   return <span>{price.price}</span>
 }
 const pageSize = 50
+
+// Product image (or variation image) in the list; queued edits are already merged into the payload.
+function ProductThumb({ product }: { product: ProductSummary }) {
+  const image = toProductImage(product.parentId ? product.payload.image : Array.isArray(product.payload.images) ? product.payload.images[0] : null)
+  if (!image?.src) return product.parentId ? null : <span className="product-thumb empty"><Boxes size={15} /></span>
+  return <span className="product-thumb"><img src={image.src} alt="" loading="lazy" decoding="async" /></span>
+}
 
 export function ProductsPage({ desktop, canCreateTerms = false }: { desktop?: DesktopApi; canCreateTerms?: boolean }) {
   const [summary, setSummary] = useState<WorkspaceSummary | null>(null)
@@ -227,7 +235,7 @@ export function ProductsPage({ desktop, canCreateTerms = false }: { desktop?: De
             {page.products.map((product) => (
               // The row shows the details; the pencil opens the editor directly.
               <div className={`product-row ${selectedId === product.id ? 'selected' : ''} ${product.parentId ? 'variation' : ''}`} key={product.id} onClick={() => select(product)}>
-                <span className="product-name">{product.parentId ? <span className="product-branch">↳</span> : <Boxes size={17} />}<button className="product-name-button" aria-pressed={selectedId === product.id} onClick={(event) => { event.stopPropagation(); select(product) }}>{product.name || 'Unbenanntes Produkt'}</button>{stateLabel(product) && <span className={`term-state ${product.changeState === 'pending' ? 'update' : 'failed'}`}>{stateLabel(product)}</span>}</span>
+                <span className="product-name">{product.parentId && <span className="product-branch">↳</span>}<ProductThumb product={product} /><button className="product-name-button" aria-pressed={selectedId === product.id} onClick={(event) => { event.stopPropagation(); select(product) }}>{product.name || 'Unbenanntes Produkt'}</button>{stateLabel(product) && <span className={`term-state ${product.changeState === 'pending' ? 'update' : 'failed'}`}>{stateLabel(product)}</span>}</span>
                 <span className="product-sku">{product.sku || '—'}</span>
                 <span className="product-type">{productTypeLabels[product.productType] ?? product.productType}</span>
                 <span className="product-price"><Price product={product} currency={page.currency} /></span>

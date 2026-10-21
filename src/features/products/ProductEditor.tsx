@@ -1,16 +1,19 @@
 import { useMemo, useState } from 'react'
 import { LoaderCircle, Plus, Save, Search, X } from 'lucide-react'
-import type { LocalProduct as ProductSummary, ProductEditorOptions, ProductTermField, TaxonomyTermOption } from '../../types/desktop'
+import type { LocalProduct as ProductSummary, ProductEditorOptions, ProductImage, ProductTermField, TaxonomyTermOption } from '../../types/desktop'
 import { findDuplicate } from '../taxonomies/termNames'
 import { ModuleFields } from './ModuleFields'
 import { metaValue } from './model'
 import { productTypeLabels } from './model'
 import { RichTextField } from './RichTextField'
+import { ImageListField, SingleImageField } from './ProductImages'
+import { toProductImage, usePendingMedia } from './media'
 
 type Values = {
   name: string; sku: string; status: string; short_description: string; description: string
   regular_price: string; sale_price: string; manage_stock: boolean; stock_quantity: string; stock_status: string
   weight: string; length: string; width: string; height: string; shipping_class: string
+  images: ProductImage[]; image: ProductImage | null
 }
 type Terms = Record<string, number[]>
 
@@ -29,8 +32,11 @@ function initialValues(payload: Record<string, unknown>): Values {
     stock_status: text(payload.stock_status) || 'instock',
     weight: text(payload.weight).replace('.', ','), length: text(dimensions.length).replace('.', ','), width: text(dimensions.width).replace('.', ','), height: text(dimensions.height).replace('.', ','),
     shipping_class: text(payload.shipping_class),
+    images: (Array.isArray(payload.images) ? payload.images : []).map(toProductImage).filter((image): image is ProductImage => image !== null),
+    image: toProductImage(payload.image),
   }
 }
+const sameImages = (a: unknown, b: unknown) => JSON.stringify(a) === JSON.stringify(b)
 
 export type NewTerm = { name: string; parent: number }
 
@@ -116,7 +122,8 @@ export function ProductEditor({ product, options, busy, error, onCancel, onSave,
   const initialMeta = useMemo(() => Object.fromEntries(options.metaFields.map((field) => [field.field, metaValue(product.payload, field.field)])), [options, product])
   const [meta, setMeta] = useState<Record<string, string>>(initialMeta)
   const [terms, setTerms] = useState<Terms>(initialTerms)
-  const set = <Key extends keyof Values>(key: Key, value: Values[Key]) => setValues({ ...values, [key]: value })
+  const set = <Key extends keyof Values>(key: Key, value: Values[Key]) => setValues((current) => ({ ...current, [key]: value }))
+  const { pending, add: addPending } = usePendingMedia()
 
   function submit(event: React.FormEvent) {
     event.preventDefault()
@@ -124,6 +131,8 @@ export function ProductEditor({ product, options, busy, error, onCancel, onSave,
     const changed: Record<string, unknown> = {}
     for (const key of ['name', 'sku', 'status', 'short_description', 'description', 'regular_price', 'sale_price', 'weight', 'shipping_class', 'manage_stock', 'stock_status'] as const)
       if (values[key] !== initial[key] && !(variation && (key === 'name' || key === 'short_description'))) changed[key] = values[key]
+    if (!variation && !sameImages(values.images, initial.images)) changed.images = values.images
+    if (variation && !sameImages(values.image, initial.image)) changed.image = values.image
     if (values.stock_quantity !== initial.stock_quantity) changed.stock_quantity = values.stock_quantity.trim() === '' ? null : Number(values.stock_quantity)
     for (const field of metaFields) if ((meta[field.field] ?? '') !== (initialMeta[field.field] ?? '')) changed[field.field] = meta[field.field] ?? ''
     if (['length', 'width', 'height'].some((key) => values[key as keyof Values] !== initial[key as keyof Values]))
@@ -156,6 +165,13 @@ export function ProductEditor({ product, options, busy, error, onCancel, onSave,
           </div>
           {!variation && <RichTextField label="Kurzbeschreibung" compact disabled={busy} value={values.short_description} onChange={(html) => set('short_description', html)} />}
           <RichTextField label="Beschreibung" compact={variation} disabled={busy} value={values.description} onChange={(html) => set('description', html)} />
+        </section>
+        <section className="product-editor-section" aria-label="Bilder">
+          <h3>Bilder</h3>
+          {variation
+            ? <SingleImageField label="Variantenbild" image={values.image} pending={pending} onPendingAdded={addPending} onChange={(image) => set('image', image)} disabled={busy} withAlt hint="Leer: Die Variante zeigt das Produktbild." />
+            : <ImageListField label="Produktbild und Galerie" images={values.images} pending={pending} onPendingAdded={addPending} onChange={(images) => set('images', images)}
+                onAppend={(added) => setValues((current) => ({ ...current, images: [...current.images, ...added.filter((image) => !current.images.some((entry) => entry.id === image.id))] }))} disabled={busy} />}
         </section>
         {product.productType !== 'variable' && product.productType !== 'grouped' && <section className="product-editor-section" aria-label="Preise">
           <h3>Preise</h3>
@@ -196,7 +212,8 @@ export function ProductEditor({ product, options, busy, error, onCancel, onSave,
               onAdd={onCreateTerm && field.editable ? () => setAddingTo(field) : undefined} />)}
           </div>
         </section>)}
-        {metaFields.length > 0 && <ModuleFields fields={metaFields} previews={variation ? [] : options.previews} values={meta} onChange={(field, value) => setMeta({ ...meta, [field]: value })}
+        {metaFields.length > 0 && <ModuleFields fields={metaFields} previews={variation ? [] : options.previews} values={meta} onChange={(field, value) => setMeta((current) => ({ ...current, [field]: value }))}
+          pending={pending} onPendingAdded={addPending}
           termFields={options.termFields.filter((field) => field.scope === 'product')} selectedTerms={terms} productName={values.name || product.name} shortDescription={values.short_description}
           permalink={typeof product.payload.permalink === 'string' ? product.payload.permalink : ''} siteName={siteName} disabled={busy} />}
       </fieldset>

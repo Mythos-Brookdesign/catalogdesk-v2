@@ -31,7 +31,7 @@ module.exports = {
   name: 'Yoast SEO',
   // Plugin folder in the shop's plugin list (system status), e.g. to tell "deactivated" from "not installed".
   plugin: 'wordpress-seo',
-  description: 'SEO-Titel, Meta-Beschreibung, Fokus-Keyphrase, Social-Vorschautexte, Indexierung, Schema und Hauptkategorie mit Google-Vorschau.',
+  description: 'SEO-Titel, Meta-Beschreibung, Fokus-Keyphrase, Social-Texte und -Bilder, Indexierung, Schema und Hauptkategorie mit Google-Vorschau.',
   detect: ({ namespaces }) => namespaces.includes('yoast/v1'),
   editorSection: 'Yoast SEO',
   metaFields: [
@@ -44,8 +44,10 @@ module.exports = {
     // Social: what Facebook, LinkedIn and others (Open Graph) and X show when the product is shared.
     { meta: '_yoast_wpseo_opengraph-title', group: 'Social', label: 'Social-Titel', type: 'text', recommended: 60, hint: 'Leer: SEO-Titel. Platzhalter wie %%title%% sind erlaubt.' },
     { meta: '_yoast_wpseo_opengraph-description', group: 'Social', label: 'Social-Beschreibung', type: 'textarea', recommended: 200, hint: 'Leer: Meta-Beschreibung.' },
+    { meta: '_yoast_wpseo_opengraph-image', idMeta: '_yoast_wpseo_opengraph-image-id', group: 'Social', label: 'Social-Bild', type: 'image', hint: 'Leer: Produktbild. Empfohlen: 1200 x 630 Pixel.' },
     { meta: '_yoast_wpseo_twitter-title', group: 'Social', label: 'X-Titel', type: 'text', recommended: 70, hint: 'Leer: Social-Titel.' },
     { meta: '_yoast_wpseo_twitter-description', group: 'Social', label: 'X-Beschreibung', type: 'textarea', recommended: 200, hint: 'Leer: Social-Beschreibung.' },
+    { meta: '_yoast_wpseo_twitter-image', idMeta: '_yoast_wpseo_twitter-image-id', group: 'Social', label: 'X-Bild', type: 'image', hint: 'Leer: Social-Bild.' },
     { meta: '_yoast_wpseo_meta-robots-noindex', group: 'Erweitert', label: 'In Suchergebnissen zeigen', type: 'select', options: robotsIndex },
     { meta: '_yoast_wpseo_meta-robots-nofollow', group: 'Erweitert', label: 'Links folgen', type: 'select', options: robotsFollow },
     { meta: '_yoast_wpseo_meta-robots-adv', group: 'Erweitert', label: 'Weitere Robots-Angaben', type: 'flags', options: robotsAdvanced, empty: ['-'] },

@@ -1,15 +1,18 @@
-const { app, BrowserWindow, ipcMain, net, protocol, safeStorage } = require('electron')
+const { app, BrowserWindow, ipcMain, nativeImage, net, protocol, safeStorage } = require('electron')
 const { mkdirSync } = require('node:fs')
+const { mkdir, readFile, rm, writeFile } = require('node:fs/promises')
+const { randomUUID } = require('node:crypto')
 const path = require('node:path')
 const { pathToFileURL } = require('node:url')
 const { createDatabaseClient } = require('./database-client.cjs')
 const { createAuthenticator } = require('./auth.cjs')
 const { createShopStore } = require('./shop-store.cjs')
-const { WooError, resolveConnection, testConnection } = require('./shop.cjs')
+const { WooError, normalizeUrl: normalizeShopUrl, resolveConnection, testConnection } = require('./shop.cjs')
 const { fetchNamespaces, fetchPluginStatus, importTaxonomies } = require('./taxonomies.cjs')
 const { syncTaxonomyChanges } = require('./taxonomy-sync.cjs')
 const { importProducts } = require('./products.cjs')
 const { syncProductChanges } = require('./product-sync.cjs')
+const { listMediaLibrary, syncMediaUploads } = require('./media.cjs')
 const productFields = require('./product-fields.cjs')
 
 const development = !app.isPackaged && process.argv.includes('--dev')
@@ -142,8 +145,10 @@ app.whenReady().then(async () => {
         if (operation === 'save') {
           const value = await shopStore.save(connection)
           const keysChanged = !stored || stored.consumerKey !== connection.consumerKey || stored.consumerSecret !== connection.consumerSecret
+          const loginChanged = stored?.wpUser !== connection.wpUser || stored?.wpAppPassword !== connection.wpAppPassword
           void audit(user, { category: 'shop', action: 'shop.connection_save', summary: 'Shopverbindung gespeichert', targetType: 'shop', targetLabel: value.url, shopUrl: value.url,
-            details: { changes: [...changeList(stored ? { url: stored.url } : null, { url: value.url }, { url: 'Shopadresse' }), ...(keysChanged ? [{ field: 'API-Schluessel', before: stored ? 'gesetzt' : null, after: 'neu gesetzt' }] : [])] } })
+            details: { changes: [...changeList(stored ? { url: stored.url } : null, { url: value.url }, { url: 'Shopadresse' }), ...(keysChanged ? [{ field: 'API-Schluessel', before: stored ? 'gesetzt' : null, after: 'neu gesetzt' }] : []),
+              ...(loginChanged ? [{ field: 'Anwendungspasswort', before: stored?.wpUser ? `gesetzt (${stored.wpUser})` : null, after: connection.wpUser ? `gesetzt (${connection.wpUser})` : 'entfernt' }] : [])] } })
           return { ok: true, value }
         }
         const result = await testConnection(connection, (url, options) => net.fetch(url, options))
@@ -152,7 +157,7 @@ app.whenReady().then(async () => {
           : { category: 'shop', action: 'shop.connection_test', summary: 'Shopverbindung geprueft: fehlgeschlagen', outcome: 'failure', targetType: 'shop', targetLabel: connection.url, shopUrl: connection.url, details: { error: result.error } })
         if (!result.ok) return result
         authorizeShopSettings(event, envelope)
-        return { ok: true, value: { url: result.url, productCount: result.productCount, checkedAt: result.checkedAt } }
+        return { ok: true, value: { url: result.url, productCount: result.productCount, checkedAt: result.checkedAt, media: result.media } }
       } catch (error) {
         const message = error.name === 'ZodError' ? 'Shopadresse und API-Schluessel pruefen.' : error.message
         if (user && operation !== 'summary' && !/^Eine Shopaktion/.test(message))
@@ -223,6 +228,17 @@ app.whenReady().then(async () => {
         result: { success: 'uebertragen', conflict: `Konflikt: ${(change.conflicts ?? []).join(', ')} im Shop geaendert`, failure: `abgelehnt: ${change.error}` }[change.outcome] })) },
     })
   }
+  // Images picked from the computer wait here (outside the database) until the shop has them.
+  const uploadDirectory = path.join(app.getPath('userData'), 'media-uploads')
+  const uploadPath = (file) => {
+    if (!/^[a-f0-9-]{36}\.(jpg|png|gif|webp)$/.test(file)) throw new Error('Ungueltige Upload-Datei.')
+    return path.join(uploadDirectory, file)
+  }
+  function auditMediaSync(changes, user, shopUrl) {
+    for (const change of changes)
+      void audit(user, { category: 'sync', action: 'sync.media', shopUrl, outcome: change.outcome === 'success' ? 'success' : 'failure', targetType: 'media', targetId: change.mediaId ? String(change.mediaId) : null, targetLabel: change.filename,
+        summary: change.outcome === 'success' ? `Bild „${change.filename}“ in die Mediathek hochgeladen` : `Bild „${change.filename}“ nicht hochgeladen`, details: change.error ? { error: change.error } : undefined })
+  }
   const emptyProductSync = async (shopUrl) => ({ synced: 0, failed: 0, conflicts: 0, offline: true, changes: [], counts: await databaseCall('productChangeCounts', { shopUrl }) })
   // Sends queued taxonomy edits, then product edits (products may reference new terms).
   // `exclude…` skips changes the caller records itself (the edit that triggered this run).
@@ -235,10 +251,14 @@ app.whenReady().then(async () => {
     try {
       const result = await syncTaxonomyChanges(connection, databaseCall, shopFetch)
       auditSync(result.changes.filter((change) => !excludeTerm(change)), user, connection.url)
-      const products = result.offline ? await emptyProductSync(connection.url) : await syncProductChanges(connection, databaseCall, shopFetch)
+      // Uploads before product edits, which may wait for their media IDs.
+      const media = result.offline ? { offline: true, changes: [] } : await syncMediaUploads(connection, databaseCall, shopFetch, (file) => readFile(uploadPath(file)))
+      auditMediaSync(media.changes, user, connection.url)
+      for (const change of media.changes) if (change.outcome === 'success') void rm(uploadPath(change.file), { force: true }).catch(() => {})
+      const products = result.offline || media.offline ? await emptyProductSync(connection.url) : await syncProductChanges(connection, databaseCall, shopFetch)
       auditProductSync(products.changes.filter((change) => !excludeProduct(change)), user, connection.url)
       if (notify && (result.synced || result.failed)) mainWindow?.webContents.send('catalog:v2:taxonomies-changed')
-      if (notify && products.changes.length) mainWindow?.webContents.send('catalog:v2:products-changed')
+      if (notify && (products.changes.length || media.changes.length)) mainWindow?.webContents.send('catalog:v2:products-changed')
       return { ...result, products }
     } finally { shopOperationRunning = false }
   }
@@ -561,6 +581,65 @@ app.whenReady().then(async () => {
       return { ok: true, value: sync?.products ?? null }
     } catch (error) {
       return { ok: false, error: productError(error, 'Konflikt konnte nicht geloest werden.') }
+    }
+  })
+  // Media library of the shop for the image picker (online only).
+  ipcMain.handle('catalog:v2:media-library', async (event, envelope) => {
+    try {
+      const { payload } = authorize(event, envelope, 'products')
+      const connection = await shopStore.load()
+      if (!connection) return { ok: false, error: 'Keine Shopverbindung gespeichert. Bitte zuerst unter Shopverbindung einrichten.' }
+      const search = typeof payload?.search === 'string' ? payload.search.trim().slice(0, 200) : ''
+      const page = Number.isSafeInteger(payload?.page) && payload.page > 0 && payload.page < 10_000 ? payload.page : 1
+      return { ok: true, value: { ...(await listMediaLibrary(connection, shopFetch, { search, page })), canUpload: Boolean(connection.wpAppPassword) } }
+    } catch (error) {
+      if (error instanceof WooError) return { ok: false, error: error.offline ? 'Die Mediathek ist nur mit Verbindung zum Shop erreichbar. Vorgemerkte Uploads lassen sich trotzdem verwenden.' : error.message }
+      return { ok: false, error: productError(error, 'Mediathek konnte nicht geladen werden.') }
+    }
+  })
+  ipcMain.handle('catalog:v2:media-pending', async (event, envelope) => {
+    try {
+      authorize(event, envelope, 'products')
+      const shop = await shopStore.summary().catch(() => null)
+      return { ok: true, value: shop ? await databaseCall('listMediaUploads', { shopUrl: shop.url }) : [] }
+    } catch (error) {
+      return { ok: false, error: productError(error, 'Vorgemerkte Bilder konnten nicht geladen werden.') }
+    }
+  })
+  // Stores a picked image locally and queues it; the next shop sync uploads it to the media library.
+  const uploadTypes = { 'image/jpeg': { ext: 'jpg', magic: (b) => b[0] === 0xff && b[1] === 0xd8 && b[2] === 0xff },
+    'image/png': { ext: 'png', magic: (b) => b.subarray(0, 8).equals(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a])) },
+    'image/gif': { ext: 'gif', magic: (b) => b.subarray(0, 4).toString('latin1') === 'GIF8' },
+    'image/webp': { ext: 'webp', magic: (b) => b.subarray(0, 4).toString('latin1') === 'RIFF' && b.subarray(8, 12).toString('latin1') === 'WEBP' } }
+  ipcMain.handle('catalog:v2:media-upload', async (event, envelope) => {
+    let user = null
+    try {
+      const authorized = authorize(event, envelope, 'products')
+      user = authorized.user
+      const payload = authorized.payload
+      const connection = await shopStore.load()
+      if (!connection) return { ok: false, error: 'Keine Shopverbindung gespeichert. Bitte zuerst unter Shopverbindung einrichten.' }
+      if (!connection.wpAppPassword) return { ok: false, error: 'Zum Hochladen bitte unter Shopverbindung einen WordPress-Benutzer mit Anwendungspasswort hinterlegen.' }
+      const type = uploadTypes[payload?.type]
+      const data = payload?.data instanceof Uint8Array ? Buffer.from(payload.data) : null
+      const filename = typeof payload?.name === 'string' ? payload.name.replace(/[\\/\u0000-\u001f]/g, '').trim().slice(0, 200) : ''
+      if (!type || !data || !filename) return { ok: false, error: 'Bitte ein Bild im Format JPG, PNG, GIF oder WebP waehlen.' }
+      if (data.length > 20 * 1024 * 1024) return { ok: false, error: `„${filename}“ ist groesser als 20 MB.` }
+      if (!type.magic(data)) return { ok: false, error: `„${filename}“ ist kein gueltiges ${type.ext.toUpperCase()}-Bild.` }
+      const image = nativeImage.createFromBuffer(data)
+      const thumbnail = image.isEmpty() ? null : image.resize({ width: Math.min(320, image.getSize().width), quality: 'good' }).toDataURL()
+      const file = `${randomUUID()}.${type.ext}`
+      await mkdir(uploadDirectory, { recursive: true, mode: 0o700 })
+      await writeFile(uploadPath(file), data, { mode: 0o600 })
+      let value
+      try { value = await databaseCall('addMediaUpload', { shopUrl: normalizeShopUrl(connection.url), file, filename, mime: payload.type, size: data.length, thumbnail: thumbnail && thumbnail.length <= 400_000 ? thumbnail : null }) }
+      catch (error) { await rm(uploadPath(file), { force: true }).catch(() => {}); throw error }
+      void audit(user, { category: 'catalog', action: 'catalog.media_upload', shopUrl: connection.url, targetType: 'media', targetLabel: filename, summary: `Bild „${filename}“ zum Hochladen vorgemerkt`, details: { size: `${Math.round(data.length / 1024)} KB` } })
+      void runShopSync({ user }).catch(() => {})
+      return { ok: true, value }
+    } catch (error) {
+      if (user) void audit(user, { category: 'catalog', action: 'catalog.media_upload', summary: 'Bild nicht vorgemerkt', outcome: 'failure', details: { error: error.message?.slice(0, 300) ?? null } })
+      return { ok: false, error: productError(error, 'Bild konnte nicht vorgemerkt werden.') }
     }
   })
   ipcMain.handle('catalog:v2:products-editor-options', async (event, envelope) => {
