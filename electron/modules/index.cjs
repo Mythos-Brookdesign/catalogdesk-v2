@@ -11,11 +11,21 @@ function isLicensed() {
   return true
 }
 
-// context: { namespaces: string[], taxonomies: string[], productFields: { scope, field }[] }
+// context: { namespaces: string[], taxonomies: string[], productFields: { scope, field }[], plugins?: { active: string[], inactive: string[] } | null }
+// `plugins` (plugin folders from the shop's system status) is authoritative when known: only an active plugin
+// counts, even if taxonomies of an earlier import are still stored. Without it, modules recognise their plugin
+// by REST namespaces and taxonomies.
 function detectModules(context) {
   return registry.filter((module) => {
+    if (context.plugins && module.plugin) return context.plugins.active.includes(module.plugin)
     try { return module.detect(context) } catch { return false }
   }).map((module) => module.id)
+}
+
+// Modules whose plugin is installed in the shop but deactivated.
+function inactiveModules(context) {
+  if (!context.plugins) return []
+  return registry.filter((module) => module.plugin && context.plugins.inactive.includes(module.plugin) && !context.plugins.active.includes(module.plugin)).map((module) => module.id)
 }
 
 // `active`: ids of modules that are detected, licensed and switched on (see database `activeModules`).
@@ -36,22 +46,24 @@ function termField(detected, field) {
   return null
 }
 
-// `switchedOff`: ids the user turned off for this shop.
-function describeModules(detected, switchedOff = []) {
+// `switchedOff`: ids the user turned off for this shop; `inactive`: plugin installed but deactivated in the shop.
+function describeModules(detected, switchedOff = [], inactive = []) {
   return registry.map((module) => {
     const licensed = isLicensed(module.id)
     const enabled = !switchedOff.includes(module.id)
-    return { id: module.id, name: module.name, description: module.description, detected: detected.includes(module.id), licensed, enabled, active: detected.includes(module.id) && licensed && enabled }
+    return { id: module.id, name: module.name, description: module.description, detected: detected.includes(module.id), inactive: !detected.includes(module.id) && inactive.includes(module.id), licensed, enabled, active: detected.includes(module.id) && licensed && enabled }
   })
 }
 
 // A module owns its taxonomies and term fields. While a detected module is switched off or not licensed,
-// everything it owns is hidden (the data stays stored). Plugin data no module owns is always shown.
-function hiddenByModules(detected, switchedOff = []) {
+// or its plugin is deactivated in the shop, everything it owns is hidden (the data stays stored).
+// Plugin data no module owns is always shown.
+function hiddenByModules(detected, switchedOff = [], inactive = []) {
   const taxonomies = new Set()
   const fields = new Set()
   for (const module of registry) {
-    if (!detected.includes(module.id) || (isLicensed(module.id) && !switchedOff.includes(module.id))) continue
+    const deactivated = inactive.includes(module.id) && !detected.includes(module.id)
+    if (!deactivated && (!detected.includes(module.id) || (isLicensed(module.id) && !switchedOff.includes(module.id)))) continue
     for (const taxonomy of Object.keys(module.taxonomyLabels ?? {})) taxonomies.add(taxonomy)
     for (const field of Object.keys(module.termFields ?? {})) fields.add(field)
     for (const field of module.metaFields ?? []) fields.add(`meta:${field.meta}`)
@@ -73,4 +85,4 @@ function previews(active) {
   }))
 }
 
-module.exports = { moduleIds, detectModules, activeModules, taxonomyLabel, termField, describeModules, hiddenByModules, metaFields, previews }
+module.exports = { moduleIds, detectModules, inactiveModules, activeModules, taxonomyLabel, termField, describeModules, hiddenByModules, metaFields, previews }

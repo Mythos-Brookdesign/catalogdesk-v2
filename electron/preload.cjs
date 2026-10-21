@@ -78,6 +78,7 @@ contextBridge.exposeInMainWorld('catalogDesk', {
   listAudit: (query) => authorized('catalog:v2:audit-list', query),
   listModules: () => authorized('catalog:v2:modules-list'),
   setModuleEnabled: (moduleId, enabled) => authorized('catalog:v2:modules-set', { moduleId, enabled }),
+  detectModules: () => authorized('catalog:v2:modules-detect'),
   onAuditAppended: (listener) => { auditListeners.add(listener); return () => auditListeners.delete(listener) },
   onTaxonomyImportProgress: (listener) => { taxonomyProgressListeners.add(listener); return () => taxonomyProgressListeners.delete(listener) },
 })

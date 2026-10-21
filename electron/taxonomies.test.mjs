@@ -86,3 +86,13 @@ it('falls back to core taxonomies without index and keeps unreadable plugin taxo
 it('decodes HTML entities in term names', () => {
   expect(taxonomies.decodeEntities('A &amp; B &#8211; C &#x2019; &unknown;')).toBe('A & B – C ’ &unknown;')
 })
+
+it('reads installed plugins by folder from the system status and tolerates a missing one', async () => {
+  const fetcher = vi.fn(async () => json({
+    active_plugins: [{ plugin: 'woocommerce/woocommerce.php', name: 'WooCommerce' }, { plugin: 'wordpress-seo/wp-seo.php', name: 'Yoast SEO' }],
+    inactive_plugins: [{ plugin: 'woocommerce-germanized/woocommerce-germanized.php', name: 'Germanized' }],
+  }))
+  expect(await taxonomies.fetchPluginStatus(connection, fetcher)).toEqual({ active: ['woocommerce', 'wordpress-seo'], inactive: ['woocommerce-germanized'] })
+  expect(fetcher.mock.calls[0][0].toString()).toContain('wc/v3/system_status')
+  expect(await taxonomies.fetchPluginStatus(connection, vi.fn(async () => new Response('{}', { status: 403, headers: { 'content-type': 'application/json' } })))).toBeNull()
+})

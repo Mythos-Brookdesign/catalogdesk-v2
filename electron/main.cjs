@@ -6,7 +6,7 @@ const { createDatabaseClient } = require('./database-client.cjs')
 const { createAuthenticator } = require('./auth.cjs')
 const { createShopStore } = require('./shop-store.cjs')
 const { WooError, resolveConnection, testConnection } = require('./shop.cjs')
-const { importTaxonomies } = require('./taxonomies.cjs')
+const { fetchNamespaces, fetchPluginStatus, importTaxonomies } = require('./taxonomies.cjs')
 const { syncTaxonomyChanges } = require('./taxonomy-sync.cjs')
 const { importProducts } = require('./products.cjs')
 const { syncProductChanges } = require('./product-sync.cjs')
@@ -175,16 +175,31 @@ app.whenReady().then(async () => {
   const operationLabels = { create: 'angelegt', update: 'geaendert', delete: 'geloescht' }
   // Stores a taxonomy import and records plugin modules that appeared or disappeared with it.
   async function storeTaxonomies(result, user) {
-    const before = (await databaseCall('listModules', { shopUrl: result.shopUrl })).modules.filter((entry) => entry.detected).map((entry) => entry.id)
+    const before = await moduleStates(result.shopUrl)
     const overview = await databaseCall('replaceTaxonomies', result)
-    const { modules } = await databaseCall('listModules', { shopUrl: result.shopUrl })
-    for (const entry of modules) {
-      const was = before.includes(entry.id)
-      if (entry.detected === was) continue
-      void audit(user, { category: 'shop', action: entry.detected ? 'shop.module_detected' : 'shop.module_removed', shopUrl: result.shopUrl, targetType: 'module', targetId: entry.id, targetLabel: entry.name,
-        summary: entry.detected ? `Modul ${entry.name} erkannt${entry.active ? ' und aktiviert' : ''}` : `Modul ${entry.name} nicht mehr erkannt`, details: { description: entry.description } })
-    }
+    auditModuleChanges(before, (await databaseCall('listModules', { shopUrl: result.shopUrl })).modules, user, result.shopUrl)
     return overview
+  }
+  const moduleState = (entry) => (entry.detected ? 'detected' : entry.inactive ? 'inactive' : 'missing')
+  async function moduleStates(shopUrl) {
+    return new Map((await databaseCall('listModules', { shopUrl })).modules.map((entry) => [entry.id, moduleState(entry)]))
+  }
+  // Records plugin modules that appeared, were deactivated in the shop or disappeared; returns their names for the user feedback.
+  function auditModuleChanges(before, modules, user, shopUrl) {
+    const changed = { added: [], deactivated: [], removed: [] }
+    const summaries = {
+      detected: (entry) => `Modul ${entry.name} erkannt${entry.active ? ' und aktiviert' : ''}`,
+      inactive: (entry) => `Plugin ${entry.name} ist im Shop deaktiviert`,
+      missing: (entry) => `Modul ${entry.name} nicht mehr erkannt`,
+    }
+    for (const entry of modules) {
+      const state = moduleState(entry)
+      if (state === (before.get(entry.id) ?? 'missing')) continue
+      changed[{ detected: 'added', inactive: 'deactivated', missing: 'removed' }[state]].push(entry.name)
+      void audit(user, { category: 'shop', action: { detected: 'shop.module_detected', inactive: 'shop.module_deactivated', missing: 'shop.module_removed' }[state], shopUrl, targetType: 'module', targetId: entry.id, targetLabel: entry.name,
+        summary: summaries[state](entry), details: { description: entry.description } })
+    }
+    return changed
   }
   function auditSync(changes, user, shopUrl) {
     if (!changes.length) return
@@ -332,6 +347,31 @@ app.whenReady().then(async () => {
       return { ok: true, value: await databaseCall('listModules', shopUrl ? { shopUrl } : {}) }
     } catch (error) {
       return { ok: false, error: /^(Sitzung|Fuer diese)/.test(error.message ?? '') ? error.message : 'Module konnten nicht geladen werden.' }
+    }
+  })
+  ipcMain.handle('catalog:v2:modules-detect', async (event, envelope) => {
+    let acquired = false
+    try {
+      const { user } = authorize(event, envelope, 'plugins')
+      if (shopOperationRunning) return { ok: false, error: 'Eine Shopaktion laeuft bereits.' }
+      shopOperationRunning = true
+      acquired = true
+      const connection = await shopStore.load()
+      if (!connection) return { ok: false, error: 'Keine Shopverbindung gespeichert. Bitte zuerst unter Shopverbindung einrichten.' }
+      // Unlike during an import, an unreachable shop must not count as "no plugins": fail instead.
+      const [namespaces, plugins] = await Promise.all([
+        fetchNamespaces(connection, shopFetch).catch(() => { throw new Error('Modul: Der Shop war nicht erreichbar. Bitte Verbindung pruefen und erneut versuchen.') }),
+        fetchPluginStatus(connection, shopFetch),
+      ])
+      authorize(event, envelope, 'plugins')
+      const before = await moduleStates(connection.url)
+      const value = await databaseCall('redetectModules', { shopUrl: connection.url, namespaces, plugins, checkedAt: new Date().toISOString() })
+      const changes = auditModuleChanges(before, value.modules, user, connection.url)
+      return { ok: true, value: { ...value, changes } }
+    } catch (error) {
+      return { ok: false, error: /^(Sitzung|Fuer diese|Modul)/.test(error.message ?? '') ? error.message : 'Plugins konnten nicht geprueft werden.' }
+    } finally {
+      if (acquired) shopOperationRunning = false
     }
   })
   ipcMain.handle('catalog:v2:modules-set', async (event, envelope) => {

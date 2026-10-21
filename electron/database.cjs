@@ -65,6 +65,7 @@ const taxonomyImportSchema = z.object({
   }).strict()).min(1).max(1000),
   productFields: z.array(z.object({ scope: z.enum(['product', 'variation']), field: z.string().regex(/^[a-z0-9_]{1,80}$/), multiple: z.boolean() }).strict()).max(500).default([]),
   modules: z.array(z.enum(modules.moduleIds)).max(100).default([]),
+  inactiveModules: z.array(z.enum(modules.moduleIds)).max(100).default([]),
 }).strict()
 const taxonomyTermsQuerySchema = z.object({
   shopUrl: shopUrlSchema.optional(),
@@ -151,7 +152,7 @@ function openDatabase(filename) {
     database.exec('PRAGMA busy_timeout = 5000; PRAGMA foreign_keys = ON; PRAGMA journal_mode = WAL; PRAGMA synchronous = FULL;')
     database.exec('BEGIN IMMEDIATE')
     const version = database.prepare('PRAGMA user_version').get().user_version
-    if (version > 14) throw new Error('Database schema is newer than this app.')
+    if (version > 15) throw new Error('Database schema is newer than this app.')
     if (version < 1) {
       database.exec(`
         CREATE TABLE shops (
@@ -439,6 +440,16 @@ function openDatabase(filename) {
       }
       database.exec('PRAGMA user_version = 14;')
     }
+    if (version < 15) {
+      // Plugins installed in the shop but deactivated (from the shop's plugin list), per shop.
+      database.exec(`CREATE TABLE IF NOT EXISTS shop_inactive_modules (
+          shop_url TEXT NOT NULL,
+          module_id TEXT NOT NULL,
+          checked_at TEXT NOT NULL,
+          PRIMARY KEY(shop_url, module_id)
+        ) STRICT;
+        PRAGMA user_version = 15;`)
+    }
     database.exec('COMMIT')
   } catch (error) {
     if (database.isTransaction) database.exec('ROLLBACK')
@@ -594,8 +605,20 @@ function openDatabase(filename) {
   function switchedOffModules(shopUrl) {
     return database.prepare('SELECT module_id AS id FROM module_settings WHERE shop_url = ? AND enabled = 0').all(shopUrl).map((row) => row.id)
   }
+  function inactiveModules(shopUrl) {
+    return database.prepare('SELECT module_id AS id FROM shop_inactive_modules WHERE shop_url = ?').all(shopUrl).map((row) => row.id)
+  }
   function hiddenByModules(shopUrl) {
-    return modules.hiddenByModules(detectedModules(shopUrl), switchedOffModules(shopUrl))
+    return modules.hiddenByModules(detectedModules(shopUrl), switchedOffModules(shopUrl), inactiveModules(shopUrl))
+  }
+  function storeModuleDetection(shopUrl, detected, inactive, at) {
+    // Keep the first detection time of modules that are still present.
+    database.prepare('DELETE FROM shop_modules WHERE shop_url = ? AND module_id NOT IN (SELECT value FROM json_each(?))').run(shopUrl, JSON.stringify(detected))
+    const insertModule = database.prepare('INSERT OR IGNORE INTO shop_modules (shop_url, module_id, detected_at) VALUES (?, ?, ?)')
+    for (const id of detected) insertModule.run(shopUrl, id, at)
+    database.prepare('DELETE FROM shop_inactive_modules WHERE shop_url = ?').run(shopUrl)
+    const insertInactive = database.prepare('INSERT INTO shop_inactive_modules (shop_url, module_id, checked_at) VALUES (?, ?, ?)')
+    for (const id of inactive) insertInactive.run(shopUrl, id, at)
   }
   // Detected and not switched off; licensing is checked by the module registry.
   function activeModuleIds(shopUrl) {
@@ -868,10 +891,7 @@ function openDatabase(filename) {
         }
         database.prepare('DELETE FROM taxonomies WHERE shop_url = ?').run(parsed.shopUrl)
         database.prepare('DELETE FROM product_term_fields WHERE shop_url = ?').run(parsed.shopUrl)
-        // Keep the first detection time of modules that are still present.
-        database.prepare(`DELETE FROM shop_modules WHERE shop_url = ? AND module_id NOT IN (SELECT value FROM json_each(?))`).run(parsed.shopUrl, JSON.stringify(parsed.modules))
-        const insertModule = database.prepare('INSERT OR IGNORE INTO shop_modules (shop_url, module_id, detected_at) VALUES (?, ?, ?)')
-        for (const id of parsed.modules) insertModule.run(parsed.shopUrl, id, parsed.importedAt)
+        storeModuleDetection(parsed.shopUrl, parsed.modules, parsed.inactiveModules, parsed.importedAt)
         const insertField = database.prepare('INSERT OR IGNORE INTO product_term_fields (shop_url, scope, field, multiple) VALUES (?, ?, ?, ?)')
         for (const field of parsed.productFields) insertField.run(parsed.shopUrl, field.scope, field.field, field.multiple ? 1 : 0)
         const insertTaxonomy = database.prepare('INSERT INTO taxonomies (shop_url, taxonomy, kind, label, base_label, label_source, route, hierarchical, available, attribute, position, imported_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)')
@@ -1049,11 +1069,29 @@ function openDatabase(filename) {
       const rows = shopUrl ? database.prepare('SELECT module_id AS id, detected_at AS detectedAt FROM shop_modules WHERE shop_url = ?').all(shopUrl) : []
       // Detection runs with imports; without one the shop has simply not been checked yet.
       const checked = Boolean(shopUrl && database.prepare('SELECT 1 FROM taxonomies WHERE shop_url = ? LIMIT 1').get(shopUrl))
-      return { shopUrl, checked, modules: modules.describeModules(rows.map((row) => row.id), shopUrl ? switchedOffModules(shopUrl) : []).map((entry) => ({ ...entry, detectedAt: rows.find((row) => row.id === entry.id)?.detectedAt ?? null })) }
+      return { shopUrl, checked, modules: modules.describeModules(rows.map((row) => row.id), shopUrl ? switchedOffModules(shopUrl) : [], shopUrl ? inactiveModules(shopUrl) : []).map((entry) => ({ ...entry, detectedAt: rows.find((row) => row.id === entry.id)?.detectedAt ?? null })) }
+    },
+    // Manual re-check (e.g. after installing a plugin): fresh REST namespaces plus the stored taxonomies
+    // and fields of the last import, without importing taxonomies again.
+    redetectModules(input) {
+      const folders = z.array(z.string().max(500)).max(2000)
+      const parsed = z.object({
+        shopUrl: shopUrlSchema, namespaces: z.array(z.string().max(200)).max(1000), checkedAt: z.string().datetime(),
+        plugins: z.object({ active: folders, inactive: folders }).strict().nullable().default(null),
+      }).strict().parse(input)
+      return transaction(() => {
+        const taxonomies = database.prepare('SELECT taxonomy FROM taxonomies WHERE shop_url = ?').all(parsed.shopUrl).map((row) => row.taxonomy)
+        if (!taxonomies.length) throw new Error('Modul: Bitte zuerst die Taxonomien importieren.')
+        const context = { namespaces: parsed.namespaces, taxonomies, productFields: database.prepare('SELECT scope, field FROM product_term_fields WHERE shop_url = ?').all(parsed.shopUrl), plugins: parsed.plugins }
+        storeModuleDetection(parsed.shopUrl, modules.detectModules(context), modules.inactiveModules(context), parsed.checkedAt)
+        applyModuleLabels(parsed.shopUrl)
+        return this.listModules({ shopUrl: parsed.shopUrl })
+      })
     },
     setModuleEnabled(input) {
       const parsed = z.object({ shopUrl: shopUrlSchema, moduleId: z.enum(modules.moduleIds), enabled: z.boolean() }).strict().parse(input)
       return transaction(() => {
+        if (inactiveModules(parsed.shopUrl).includes(parsed.moduleId)) throw new Error('Modul: Das Plugin ist im Shop deaktiviert. Bitte zuerst in WordPress aktivieren.')
         if (!detectedModules(parsed.shopUrl).includes(parsed.moduleId)) throw new Error('Modul: Das Plugin wurde in diesem Shop nicht erkannt.')
         database.prepare(`INSERT INTO module_settings (shop_url, module_id, enabled, updated_at) VALUES (?, ?, ?, ?)
           ON CONFLICT(shop_url, module_id) DO UPDATE SET enabled = excluded.enabled, updated_at = excluded.updated_at`).run(parsed.shopUrl, parsed.moduleId, parsed.enabled ? 1 : 0, new Date().toISOString())

@@ -35,6 +35,7 @@ const operations = new Set([
   'failTaxonomyChange',
   'listModules',
   'setModuleEnabled',
+  'redetectModules',
   'productChangeCounts',
   'productEditorOptions',
   'queueProductChange',

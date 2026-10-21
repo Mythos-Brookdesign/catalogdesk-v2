@@ -119,7 +119,7 @@ export type TaxonomyTermChange =
   | { taxonomy: string; operation: 'delete'; termId: number }
 export type TaxonomySyncResult = { synced: number; failed: number; offline: boolean; pendingChanges: number; failedChanges: number }
 export type TaxonomyTermOption = { id: number; name: string; slug: string; path: string; depth: number }
-export type PluginModule = { id: string; name: string; description: string; detected: boolean; licensed: boolean; enabled: boolean; active: boolean; detectedAt: string | null }
+export type PluginModule = { id: string; name: string; description: string; detected: boolean; inactive: boolean; licensed: boolean; enabled: boolean; active: boolean; detectedAt: string | null }
 export type AuditCategory = 'auth' | 'users' | 'settings' | 'shop' | 'taxonomies' | 'sync' | 'catalog'
 export type AuditChange = { field: string; before: unknown; after: unknown }
 export type AuditEntry = {
@@ -174,6 +174,7 @@ declare global {
       listAudit: (query: AuditQuery) => Promise<UserResult<AuditPage>>
       listModules: () => Promise<UserResult<{ shopUrl: string | null; checked: boolean; modules: PluginModule[] }>>
       setModuleEnabled: (moduleId: string, enabled: boolean) => Promise<UserResult<PluginModule>>
+      detectModules: () => Promise<UserResult<{ shopUrl: string | null; checked: boolean; modules: PluginModule[]; changes: { added: string[]; deactivated: string[]; removed: string[] } }>>
       onAuditAppended: (listener: () => void) => () => void
       onTaxonomyImportProgress: (listener: (progress: TaxonomyImportProgress) => void) => () => void
     }

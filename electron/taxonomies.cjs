@@ -112,11 +112,26 @@ async function discoverWooTaxonomies(connection, fetcher) {
 }
 
 // REST namespaces of all plugins (e.g. yoast/v1); used by modules to recognise plugins. Public, no keys.
-async function discoverNamespaces(connection, fetcher) {
+async function fetchNamespaces(connection, fetcher) {
+  const { data } = await wooRequest(connection, '', { _fields: 'namespaces' }, fetcher, { maxBytes: 1024 * 1024 })
+  return z.object({ namespaces: z.array(z.string().max(200)).max(1000) }).parse(data).namespaces
+}
+
+// Installed plugins by folder (e.g. "wordpress-seo"), active and deactivated, from WooCommerce's system status.
+// Null when the shop does not provide it (older WooCommerce, missing permission); detection then falls back.
+async function fetchPluginStatus(connection, fetcher) {
+  const plugins = z.array(z.object({ plugin: z.string().max(500) }).passthrough()).max(2000)
   try {
-    const { data } = await wooRequest(connection, '', { _fields: 'namespaces' }, fetcher, { maxBytes: 1024 * 1024 })
-    return z.object({ namespaces: z.array(z.string().max(200)).max(1000) }).parse(data).namespaces
-  } catch { return [] }
+    const { data } = await wooRequest(connection, 'wc/v3/system_status', { _fields: 'active_plugins,inactive_plugins' }, fetcher, { maxBytes: 4 * 1024 * 1024, timeoutMs: 30_000 })
+    const parsed = z.object({ active_plugins: plugins, inactive_plugins: plugins.optional() }).parse(data)
+    const folders = (list = []) => [...new Set(list.map((entry) => entry.plugin.split('/')[0]).filter(Boolean))]
+    return { active: folders(parsed.active_plugins), inactive: folders(parsed.inactive_plugins) }
+  } catch { return null }
+}
+
+// During an import a missing index only means fewer detected modules.
+async function discoverNamespaces(connection, fetcher) {
+  try { return await fetchNamespaces(connection, fetcher) } catch { return [] }
 }
 
 // Taxonomies registered with show_in_rest (themes, custom code) appear in wp/v2 even without a WooCommerce controller.
@@ -159,7 +174,7 @@ function toTerm(term, hierarchical) {
 }
 
 async function importTaxonomies(connection, fetcher, onProgress = () => {}) {
-  const [{ sources: woo, productFields }, wordpress, namespaces] = await Promise.all([discoverWooTaxonomies(connection, fetcher), discoverWordPressTaxonomies(connection, fetcher), discoverNamespaces(connection, fetcher)])
+  const [{ sources: woo, productFields }, wordpress, namespaces, plugins] = await Promise.all([discoverWooTaxonomies(connection, fetcher), discoverWordPressTaxonomies(connection, fetcher), discoverNamespaces(connection, fetcher), fetchPluginStatus(connection, fetcher)])
   const labels = new Map(wordpress.map((entry) => [entry.slug, decodeEntities(entry.name)]))
   const sources = [...woo]
   for (const entry of wordpress) {
@@ -167,7 +182,8 @@ async function importTaxonomies(connection, fetcher, onProgress = () => {}) {
     if (entry.slug.startsWith('pa_') || sources.some((source) => source.taxonomy === entry.slug) || !routePath.safeParse(route).success) continue
     sources.push({ taxonomy: entry.slug, route, hierarchical: entry.hierarchical, args: ['per_page', 'page', 'orderby', 'order'], fields: `id,name,slug,description,count${entry.hierarchical ? ',parent' : ''}` })
   }
-  const detected = modules.detectModules({ namespaces, taxonomies: sources.map((source) => source.taxonomy), productFields })
+  const context = { namespaces, taxonomies: sources.map((source) => source.taxonomy), productFields, plugins }
+  const detected = modules.detectModules(context)
   // Core taxonomies first, then plugin and custom taxonomies alphabetically.
   const core = Object.keys(coreLabels)
   sources.sort((a, b) => (core.includes(a.taxonomy) ? core.indexOf(a.taxonomy) : 99) - (core.includes(b.taxonomy) ? core.indexOf(b.taxonomy) : 99) || a.taxonomy.localeCompare(b.taxonomy))
@@ -217,7 +233,7 @@ async function importTaxonomies(connection, fetcher, onProgress = () => {}) {
     completed++
   }
   progress('Speichern')
-  return { shopUrl: normalizeUrl(connection.url), importedAt: new Date().toISOString(), taxonomies, productFields, modules: detected }
+  return { shopUrl: normalizeUrl(connection.url), importedAt: new Date().toISOString(), taxonomies, productFields, modules: detected, inactiveModules: modules.inactiveModules(context) }
 }
 
-module.exports = { decodeEntities, humanize, importTaxonomies, termSchema, toTerm }
+module.exports = { decodeEntities, fetchNamespaces, fetchPluginStatus, humanize, importTaxonomies, termSchema, toTerm }

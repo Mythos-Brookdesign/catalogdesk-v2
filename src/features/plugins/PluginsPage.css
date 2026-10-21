@@ -18,3 +18,5 @@
 .module-switch[aria-checked='true'] > span { transform: translateX(16px); background: #fff; }
 @media (prefers-reduced-motion: reduce) { .module-switch, .module-switch > span { transition: none; } }
 @media (max-width: 600px) { .plugins-list li { grid-template-columns: auto minmax(0, 1fr); } .module-controls { grid-column: 2; justify-self: start; } }
+.plugins-title { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 12px; }
+.plugins-list li div .module-hint { margin-top: 4px; color: var(--amber); }

@@ -113,3 +113,46 @@ it('hides what a switched-off module owns without a new import and keeps the dat
     expect(() => database.setModuleEnabled({ shopUrl, moduleId: 'germanized', enabled: true })).toThrow('nicht erkannt')
   } finally { database.close() }
 })
+
+it('re-detects modules from fresh namespaces and the stored taxonomies without a new import', () => {
+  const directory = mkdtempSync(path.join(os.tmpdir(), 'catalogdesk-v2-modules-redetect-'))
+  directories.push(directory)
+  const database = databaseModule.openDatabase(path.join(directory, 'catalogdesk-v2.sqlite'))
+  const checkedAt = new Date().toISOString()
+  try {
+    expect(() => database.redetectModules({ shopUrl, namespaces: ['yoast/v1'], checkedAt })).toThrow('zuerst die Taxonomien importieren')
+    database.replaceTaxonomies({ shopUrl, importedAt: '2026-10-01T00:00:00.000Z', modules: ['germanized'], taxonomies: [
+      { taxonomy: 'product_delivery_time', kind: 'custom', label: 'Delivery time', route: 'wc/v3/products/delivery_times', hierarchical: false, available: true, attribute: null, terms: [] },
+    ] })
+    const state = (result) => Object.fromEntries(result.modules.map((entry) => [entry.id, [entry.active, entry.detectedAt]]))
+    // Yoast installed later: found by its namespace; Germanized keeps its first detection time.
+    expect(state(database.redetectModules({ shopUrl, namespaces: ['wc/v3', 'yoast/v1'], checkedAt }))).toEqual({ germanized: [true, '2026-10-01T00:00:00.000Z'], 'yoast-seo': [true, checkedAt] })
+    expect(database.productEditorOptions({ shopUrl }).metaFields.some((field) => field.module === 'yoast-seo')).toBe(true)
+    // Yoast removed again.
+    expect(state(database.redetectModules({ shopUrl, namespaces: ['wc/v3'], checkedAt }))['yoast-seo']).toEqual([false, null])
+  } finally { database.close() }
+})
+
+it('marks modules whose plugin is deactivated in the shop and hides what they own', () => {
+  const directory = mkdtempSync(path.join(os.tmpdir(), 'catalogdesk-v2-modules-inactive-'))
+  directories.push(directory)
+  const database = databaseModule.openDatabase(path.join(directory, 'catalogdesk-v2.sqlite'))
+  const checkedAt = new Date().toISOString()
+  const redetect = (plugins) => database.redetectModules({ shopUrl, namespaces: ['wc/v3', 'yoast/v1'], plugins, checkedAt })
+  try {
+    database.replaceTaxonomies({ shopUrl, importedAt: checkedAt, modules: ['germanized'], taxonomies: [
+      { taxonomy: 'product_unit', kind: 'custom', label: 'Unit', labelSource: 'generated', route: 'wc/v3/products/units', hierarchical: false, available: true, attribute: null, terms: [] },
+    ], productFields: [{ scope: 'product', field: 'unit', multiple: false }] })
+    // The plugin list wins over stored taxonomies and namespaces: Germanized is deactivated, Yoast not installed.
+    const result = redetect({ active: ['woocommerce'], inactive: ['woocommerce-germanized'] })
+    expect(result.modules.map((entry) => [entry.id, entry.detected, entry.inactive, entry.active])).toEqual([['germanized', false, true, false], ['yoast-seo', false, false, false]])
+    expect(database.productEditorOptions({ shopUrl }).termFields).toEqual([])
+    expect(database.taxonomyOverview({ shopUrl }).taxonomies).toEqual([])
+    expect(() => database.setModuleEnabled({ shopUrl, moduleId: 'germanized', enabled: true })).toThrow('im Shop deaktiviert')
+    // Activated again in WordPress.
+    expect(redetect({ active: ['woocommerce', 'woocommerce-germanized', 'wordpress-seo'], inactive: [] }).modules.map((entry) => [entry.id, entry.inactive, entry.active])).toEqual([['germanized', false, true], ['yoast-seo', false, true]])
+    expect(database.taxonomyOverview({ shopUrl }).taxonomies.map((entry) => entry.label)).toEqual(['Einheiten'])
+    // Without a plugin list (no permission) detection falls back to namespaces and taxonomies.
+    expect(redetect(null).modules.map((entry) => [entry.id, entry.active])).toEqual([['germanized', true], ['yoast-seo', true]])
+  } finally { database.close() }
+})

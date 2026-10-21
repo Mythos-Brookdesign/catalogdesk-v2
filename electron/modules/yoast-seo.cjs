@@ -29,6 +29,8 @@ const schemaPageTypes = [
 module.exports = {
   id: 'yoast-seo',
   name: 'Yoast SEO',
+  // Plugin folder in the shop's plugin list (system status), e.g. to tell "deactivated" from "not installed".
+  plugin: 'wordpress-seo',
   description: 'SEO-Titel, Meta-Beschreibung, Fokus-Keyphrase, Social-Vorschautexte, Indexierung, Schema und Hauptkategorie mit Google-Vorschau.',
   detect: ({ namespaces }) => namespaces.includes('yoast/v1'),
   editorSection: 'Yoast SEO',

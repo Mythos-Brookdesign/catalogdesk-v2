@@ -14,6 +14,8 @@ const taxonomies = {
 module.exports = {
   id: 'germanized',
   name: 'Germanized',
+  // Plugin folder in the shop's plugin list (system status), e.g. to tell "deactivated" from "not installed".
+  plugin: 'woocommerce-germanized',
   description: 'Lieferzeiten, Einheiten, Hersteller, Preishinweise, Pfand, Naehrwerte und Allergene fuer rechtssichere Shops in Deutschland.',
   // Active when the shop exposes at least one Germanized taxonomy.
   detect: ({ taxonomies: found }) => found.some((taxonomy) => taxonomy in taxonomies),
