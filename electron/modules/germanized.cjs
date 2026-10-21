@@ -26,5 +26,10 @@ module.exports = {
     sale_price_label: { taxonomy: 'product_price_label', label: 'Preishinweis Angebot' },
     sale_price_regular_label: { taxonomy: 'product_price_label', label: 'Preishinweis regulaer' },
   },
+  // Germanized stores the cart description as product meta and also returns it as `mini_desc`;
+  // writing the meta keeps it in the generic meta_data path. Variations can have their own.
+  metaFields: [
+    { meta: '_mini_desc', label: 'Warenkorbkurzbeschreibung', type: 'html', scopes: ['product', 'variation'], hint: 'Wird im Bezahlvorgang und in den E-Mails als Kurzbeschreibung des Produkts angezeigt.' },
+  ],
   editorSection: 'Germanized',
 }

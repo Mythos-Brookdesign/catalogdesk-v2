@@ -1,4 +1,6 @@
+import { Fragment } from 'react'
 import type { ProductMetaField, ProductPreview, ProductTermField } from '../../types/desktop'
+import { RichTextField } from './RichTextField'
 
 const plain = (html: string) => new DOMParser().parseFromString(html, 'text/html').body.textContent?.replace(/\s+/g, ' ').trim() ?? ''
 
@@ -36,9 +38,9 @@ function SearchSnippet({ preview, values, productName, shortDescription, permali
 }
 
 // Editor sections of plugin modules that store product meta (e.g. Yoast SEO).
-export function ModuleFields({ fields, previews, values, onChange, termFields, selectedTerms, productName, shortDescription, permalink, siteName }: {
+export function ModuleFields({ fields, previews, values, onChange, termFields, selectedTerms, productName, shortDescription, permalink, siteName, disabled = false }: {
   fields: ProductMetaField[]; previews: ProductPreview[]; values: Record<string, string>; onChange: (field: string, value: string) => void
-  termFields: ProductTermField[]; selectedTerms: Record<string, number[]>; productName: string; shortDescription: string; permalink: string; siteName: string
+  termFields: ProductTermField[]; selectedTerms: Record<string, number[]>; productName: string; shortDescription: string; permalink: string; siteName: string; disabled?: boolean
 }) {
   const sections = [...new Set(fields.map((field) => field.section))]
   // Length hints count what search engines show: the resolved title and description.
@@ -51,23 +53,39 @@ export function ModuleFields({ fields, previews, values, onChange, termFields, s
   return <>{sections.map((section) => <section key={section} className="product-editor-section" aria-label={section}>
     <h3>{section}</h3>
     {previews.filter((preview) => preview.section === section).map((preview) => <SearchSnippet key={preview.module} preview={preview} values={values} productName={productName} shortDescription={shortDescription} permalink={permalink} siteName={siteName} />)}
-    {fields.filter((field) => field.section === section).map((field) => {
+    {fields.filter((field) => field.section === section).map((field, index, inSection) => {
       const value = values[field.field] ?? ''
-      const id = `meta-${field.meta}`
-      const label = <span className="meta-label"><label htmlFor={id}>{field.label}</label><Counter value={shown(field.field, value)} recommended={field.recommended} minimum={field.minimum} /></span>
-      let input
-      if (field.type === 'textarea') input = <textarea id={id} rows={3} maxLength={10_000} value={value} onChange={(event) => onChange(field.field, event.target.value)} />
-      else if (field.type === 'select') input = <select id={id} value={value} onChange={(event) => onChange(field.field, event.target.value)}>{field.options?.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}</select>
-      else if (field.type === 'primaryTerm') {
-        // Choices are the terms currently selected in the referenced field (e.g. the product's categories).
-        const source = termFields.find((entry) => entry.field === field.of)
-        const chosen = (selectedTerms[field.of ?? ''] ?? []).map((termId) => source?.terms.find((term) => term.id === termId)).filter((term) => term && term.id > 0)
-        input = <select id={id} value={chosen.some((term) => String(term!.id) === value) ? value : ''} onChange={(event) => onChange(field.field, event.target.value)}>
-          <option value="">Automatisch</option>
-          {chosen.map((term) => <option key={term!.id} value={String(term!.id)}>{term!.name}</option>)}
-        </select>
-      } else input = <input id={id} type={field.type === 'url' ? 'url' : 'text'} maxLength={10_000} spellCheck={field.type !== 'url'} placeholder={field.type === 'url' ? 'https://...' : undefined} value={value} onChange={(event) => onChange(field.field, event.target.value)} />
-      return <div key={field.field} className="auth-field meta-field">{label}{input}{field.hint && <small className="taxonomy-hint">{field.hint}</small>}</div>
+      // Sub-heading where a module's field group starts (e.g. Yoast's "Social" and "Erweitert").
+      const heading = field.group && field.group !== inSection[index - 1]?.group ? <h4 key={`group-${field.group}`} className="meta-group">{field.group}</h4> : null
+      return <Fragment key={field.field}>{heading}{fieldInput(field, value)}</Fragment>
     })}
   </section>)}</>
+
+  function fieldInput(field: ProductMetaField, value: string) {
+    if (field.type === 'html') return <div className="meta-field">
+      <RichTextField label={field.label} compact disabled={disabled} value={value} onChange={(html) => onChange(field.field, html)} />
+      {field.hint && <small className="taxonomy-hint">{field.hint}</small>}
+    </div>
+    const id = `meta-${field.meta}`
+    const label = <span className="meta-label"><label htmlFor={id}>{field.label}</label><Counter value={shown(field.field, value)} recommended={field.recommended} minimum={field.minimum} /></span>
+    let input
+    if (field.type === 'textarea') input = <textarea id={id} rows={3} maxLength={10_000} value={value} onChange={(event) => onChange(field.field, event.target.value)} />
+    else if (field.type === 'flags') {
+      const checked = value.split(',').map((entry) => entry.trim())
+      input = <div id={id} role="group" aria-label={field.label} className="meta-flags">{field.options?.map((option) => <label key={option.value} className="product-editor-check">
+        <input type="checkbox" checked={checked.includes(option.value)} onChange={(event) => onChange(field.field, field.options!.filter((entry) => entry.value === option.value ? event.target.checked : checked.includes(entry.value)).map((entry) => entry.value).join(','))} />
+        {option.label}
+      </label>)}</div>
+    } else if (field.type === 'select') input = <select id={id} value={value} onChange={(event) => onChange(field.field, event.target.value)}>{field.options?.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}</select>
+    else if (field.type === 'primaryTerm') {
+      // Choices are the terms currently selected in the referenced field (e.g. the product's categories).
+      const source = termFields.find((entry) => entry.field === field.of)
+      const chosen = (selectedTerms[field.of ?? ''] ?? []).map((termId) => source?.terms.find((term) => term.id === termId)).filter((term) => term && term.id > 0)
+      input = <select id={id} value={chosen.some((term) => String(term!.id) === value) ? value : ''} onChange={(event) => onChange(field.field, event.target.value)}>
+        <option value="">Automatisch</option>
+        {chosen.map((term) => <option key={term!.id} value={String(term!.id)}>{term!.name}</option>)}
+      </select>
+    } else input = <input id={id} type={field.type === 'url' ? 'url' : 'text'} maxLength={10_000} spellCheck={field.type !== 'url'} placeholder={field.type === 'url' ? 'https://...' : undefined} value={value} onChange={(event) => onChange(field.field, event.target.value)} />
+    return <div className="auth-field meta-field">{label}{input}{field.hint && <small className="taxonomy-hint">{field.hint}</small>}</div>
+  }
 }

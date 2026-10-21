@@ -61,7 +61,7 @@ export function productFieldValue(field: string, value: unknown): string {
   if (typeof value === 'boolean') return value ? 'Ja' : 'Nein'
   if (field === 'status') return productStatusLabels[String(value)] ?? String(value)
   if (field === 'stock_status') return stockLabels[String(value)] ?? String(value)
-  if (field === 'description' || field === 'short_description') {
+  if (field === 'description' || field === 'short_description' || (field.startsWith('meta:') && /<[a-z][^>]*>/i.test(String(value)))) {
     const plain = new DOMParser().parseFromString(String(value), 'text/html').body.textContent?.replace(/\s+/g, ' ').trim() ?? ''
     return plain.length > 120 ? `${plain.slice(0, 117)}...` : plain || '—'
   }

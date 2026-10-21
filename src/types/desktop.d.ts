@@ -22,8 +22,8 @@ export type LocalProduct = {
 export type ProductChangeCounts = { pending: number; failed: number; conflict: number }
 export type ProductTermField = { scope: 'product' | 'variation'; field: string; multiple: boolean; taxonomy: string; label: string; hierarchical: boolean; section: string | null; editable: boolean; terms: TaxonomyTermOption[] }
 export type ProductMetaField = {
-  field: string; meta: string; label: string; type: 'text' | 'textarea' | 'url' | 'select' | 'primaryTerm'; section: string; module: string; scopes: ('product' | 'variation')[]
-  recommended?: number; minimum?: number; hint?: string; of?: string; options?: { value: string; label: string }[]
+  field: string; meta: string; label: string; type: 'text' | 'textarea' | 'html' | 'url' | 'select' | 'flags' | 'primaryTerm'; section: string; module: string; scopes: ('product' | 'variation')[]
+  recommended?: number; minimum?: number; hint?: string; of?: string; ofLabel?: string; group?: string; empty?: string[]; options?: { value: string; label: string }[]
 }
 export type ProductPreview = { type: 'search-snippet'; module: string; section: string; title: string | null; description: string | null }
 export type ProductEditorOptions = { termFields: ProductTermField[]; shippingClasses: { slug: string; name: string }[]; metaFields: ProductMetaField[]; previews: ProductPreview[] }

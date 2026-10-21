@@ -1102,6 +1102,13 @@ function openDatabase(filename) {
             if (definition.type === 'select' && !definition.options.some((option) => option.value === value)) throw new Error(`Produkt: ${definition.label} ist ungueltig.`)
             if (definition.type === 'url' && value && !/^https?:\/\/[^\s]+$/i.test(value)) throw new Error(`Produkt: ${definition.label} muss eine vollstaendige Adresse sein (https://...).`)
             if (definition.type === 'primaryTerm' && value && !/^\d+$/.test(value)) throw new Error(`Produkt: ${definition.label} ist ungueltig.`)
+            if (definition.type === 'flags') {
+              // Several options in one comma-separated value, stored in the order of the options.
+              const flags = value.split(',').map((entry) => entry.trim()).filter((entry) => entry && !(definition.empty ?? []).includes(entry))
+              if (flags.some((flag) => !definition.options.some((option) => option.value === flag))) throw new Error(`Produkt: ${definition.label} ist ungueltig.`)
+              next[field] = definition.options.filter((option) => flags.includes(option.value)).map((option) => option.value).join(',')
+              continue
+            }
             next[field] = value
             continue
           }
@@ -1133,7 +1140,7 @@ function openDatabase(filename) {
           const value = fieldValue(merged, field)
           if (definition.type !== 'primaryTerm' || !value || !(field in next)) continue
           if (!(Array.isArray(merged[definition.of]) ? merged[definition.of] : []).some((term) => String(term.id) === String(value)))
-            throw new Error(`Produkt: ${definition.label} muss eine der zugeordneten Kategorien sein.`)
+            throw new Error(`Produkt: ${definition.label} muss zu den zugeordneten ${definition.ofLabel ?? 'Begriffen'} gehoeren.`)
         }
         if (merged.sale_price && merged.regular_price && Number(merged.sale_price) >= Number(merged.regular_price))
           throw new Error('Produkt: Der Angebotspreis muss kleiner als der regulaere Preis sein.')

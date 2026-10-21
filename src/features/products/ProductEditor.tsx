@@ -5,6 +5,7 @@ import { findDuplicate } from '../taxonomies/termNames'
 import { ModuleFields } from './ModuleFields'
 import { metaValue } from './model'
 import { productTypeLabels } from './model'
+import { RichTextField } from './RichTextField'
 
 type Values = {
   name: string; sku: string; status: string; short_description: string; description: string
@@ -153,8 +154,8 @@ export function ProductEditor({ product, options, busy, error, onCancel, onSave,
               <option value="private">Privat</option>
             </select></label>
           </div>
-          {!variation && <label className="auth-field"><span>Kurzbeschreibung</span><textarea rows={3} value={values.short_description} onChange={(event) => set('short_description', event.target.value)} /></label>}
-          <label className="auth-field"><span>Beschreibung</span><textarea rows={variation ? 3 : 6} value={values.description} onChange={(event) => set('description', event.target.value)} /></label>
+          {!variation && <RichTextField label="Kurzbeschreibung" compact disabled={busy} value={values.short_description} onChange={(html) => set('short_description', html)} />}
+          <RichTextField label="Beschreibung" compact={variation} disabled={busy} value={values.description} onChange={(html) => set('description', html)} />
         </section>
         {product.productType !== 'variable' && product.productType !== 'grouped' && <section className="product-editor-section" aria-label="Preise">
           <h3>Preise</h3>
@@ -197,7 +198,7 @@ export function ProductEditor({ product, options, busy, error, onCancel, onSave,
         </section>)}
         {metaFields.length > 0 && <ModuleFields fields={metaFields} previews={variation ? [] : options.previews} values={meta} onChange={(field, value) => setMeta({ ...meta, [field]: value })}
           termFields={options.termFields.filter((field) => field.scope === 'product')} selectedTerms={terms} productName={values.name || product.name} shortDescription={values.short_description}
-          permalink={typeof product.payload.permalink === 'string' ? product.payload.permalink : ''} siteName={siteName} />}
+          permalink={typeof product.payload.permalink === 'string' ? product.payload.permalink : ''} siteName={siteName} disabled={busy} />}
       </fieldset>
       {error && <p className="auth-error" role="alert">{error}</p>}
       <footer><button className="button" type="button" disabled={busy} onClick={onCancel}>Abbrechen</button><button className="button primary" disabled={busy || (!variation && !values.name.trim())}>{busy ? <LoaderCircle className="spin" size={16} /> : <Save size={16} />}Speichern</button></footer>

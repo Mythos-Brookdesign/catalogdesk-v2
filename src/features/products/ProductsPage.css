@@ -103,3 +103,26 @@
 .search-snippet-title { color: #1a0dab; font-size: 18px; font-weight: 400; line-height: 1.3; }
 [data-theme='dark'] .search-snippet-title { color: #8ab4f8; }
 .search-snippet-description { color: var(--ink); font-size: 13px; line-height: 1.5; }
+.rich-text-frame { border: 1px solid var(--line); border-radius: 4px; background: var(--surface); }
+.rich-text-frame:focus-within { border-color: var(--accent); }
+.rich-text-toolbar { display: flex; flex-wrap: wrap; align-items: center; gap: 2px; padding: 4px; border-bottom: 1px solid var(--line); background: var(--surface-alt); border-radius: 4px 4px 0 0; }
+.rich-text-button.active { border-color: var(--line); background: var(--surface); color: var(--accent); }
+.rich-text-button:disabled { opacity: .4; }
+.rich-text-divider { width: 1px; height: 18px; margin: 0 4px; background: var(--line); }
+.rich-text-mode { margin-left: auto; min-height: 28px; display: inline-flex; align-items: center; gap: 6px; padding: 0 9px; border: 1px solid transparent; border-radius: 4px; background: transparent; color: var(--muted); font-size: 11px; font-weight: 550; }
+.rich-text-mode:hover:not(:disabled), .rich-text-mode.active { border-color: var(--line); background: var(--surface); color: var(--ink); }
+.rich-text-link { display: flex; gap: 8px; padding: 6px; border-bottom: 1px solid var(--line); }
+.rich-text-link input { flex: 1; min-width: 0; padding: 6px 9px; border: 1px solid var(--line); border-radius: 4px; background: var(--surface); color: var(--ink); font: inherit; font-size: 13px; }
+.rich-text-content { min-height: 160px; max-height: 420px; overflow-y: auto; padding: 10px 12px; color: var(--ink); font-size: 13px; line-height: 1.55; outline: none; }
+.rich-text.compact .rich-text-content { min-height: 80px; }
+.rich-text-content > * + * { margin-top: .6em; }
+.rich-text-content h2 { font-size: 17px; }
+.rich-text-content h3 { font-size: 15px; }
+.rich-text-content h4 { font-size: 13px; }
+.rich-text-content ul, .rich-text-content ol { padding-left: 22px; }
+.rich-text-content a { color: var(--accent); text-decoration: underline; }
+.rich-text-content blockquote { padding-left: 10px; border-left: 3px solid var(--line); color: var(--muted); }
+.rich-text-source { display: block; width: 100%; padding: 10px 12px; border: 0; border-radius: 0 0 4px 4px; background: var(--surface); color: var(--ink); font-family: 'IBM Plex Mono', monospace; font-size: 12px; resize: vertical; outline: none; }
+.product-editor .rich-text-source { border: 0; }
+.meta-group { margin-top: 6px; padding-top: 10px; border-top: 1px dashed var(--line); font-size: 12px; font-weight: 650; color: var(--ink); }
+.meta-flags { display: flex; flex-wrap: wrap; gap: 8px 18px; }

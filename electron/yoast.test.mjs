@@ -76,6 +76,25 @@ it('edits Yoast meta fields with validation and sends only the changed meta keys
   } finally { database.close() }
 })
 
+it('validates social, robots and schema fields and stores robots flags in a fixed order', () => {
+  const { database } = setup()
+  try {
+    const fields = database.productEditorOptions({ shopUrl }).metaFields
+    expect(fields.filter((field) => field.group === 'Social').map((field) => field.field)).toEqual([
+      'meta:_yoast_wpseo_opengraph-title', 'meta:_yoast_wpseo_opengraph-description', 'meta:_yoast_wpseo_twitter-title', 'meta:_yoast_wpseo_twitter-description',
+    ])
+    const change = (values) => database.queueProductChange({ shopUrl, productId: 60, values, terms: {} })
+    expect(() => change({ 'meta:_yoast_wpseo_meta-robots-adv': 'noimageindex,noindex' })).toThrow('Weitere Robots-Angaben ist ungueltig')
+    expect(() => change({ 'meta:_yoast_wpseo_schema_page_type': 'Blog' })).toThrow('ungueltig')
+    expect(() => change({ 'meta:_yoast_wpseo_primary_product_brand': '9' })).toThrow('Hauptmarke muss zu den zugeordneten Marken gehoeren')
+    // Order of the options, duplicates and Yoast's old "-" for none removed.
+    change({ 'meta:_yoast_wpseo_meta-robots-adv': 'nosnippet, -, noimageindex,nosnippet', 'meta:_yoast_wpseo_opengraph-title': 'Hoodie teilen', 'meta:_yoast_wpseo_schema_page_type': 'ItemPage' })
+    expect(database.listProducts().products[0].changes).toMatchObject({
+      'meta:_yoast_wpseo_meta-robots-adv': 'noimageindex,nosnippet', 'meta:_yoast_wpseo_opengraph-title': 'Hoodie teilen', 'meta:_yoast_wpseo_schema_page_type': 'ItemPage',
+    })
+  } finally { database.close() }
+})
+
 it('hides Yoast fields while the module is switched off', () => {
   const { database } = setup()
   try {

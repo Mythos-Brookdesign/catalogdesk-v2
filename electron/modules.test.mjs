@@ -17,6 +17,8 @@ it('detects Germanized by its taxonomies and provides labels and field meanings'
   expect(modules.taxonomyLabel(detected, 'product_price_label')).toBe('Preishinweise')
   expect(modules.taxonomyLabel([], 'product_price_label')).toBeNull()
   expect(modules.termField(detected, 'sale_price_regular_label')).toMatchObject({ taxonomy: 'product_price_label', label: 'Preishinweis regulaer', section: 'Germanized' })
+  expect(modules.metaFields(detected)).toEqual([expect.objectContaining({ field: 'meta:_mini_desc', label: 'Warenkorbkurzbeschreibung', type: 'html', section: 'Germanized', scopes: ['product', 'variation'] })])
+  expect(modules.hiddenByModules(detected, ['germanized']).fields.has('meta:_mini_desc')).toBe(true)
   expect(modules.describeModules(detected)).toEqual([expect.objectContaining({ id: 'germanized', detected: true, active: true }), expect.objectContaining({ id: 'yoast-seo', detected: false, active: false })])
 })
 

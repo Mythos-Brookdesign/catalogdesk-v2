@@ -71,8 +71,9 @@ function display(field, value) {
   if (field === 'manage_stock') return value ? 'Ja' : 'Nein'
   if (field === 'status') return { publish: 'Veroeffentlicht', draft: 'Entwurf', pending: 'Ausstehend', private: 'Privat' }[value] ?? value
   if (field === 'stock_status') return { instock: 'Vorraetig', outofstock: 'Nicht vorraetig', onbackorder: 'Lieferrueckstand' }[value] ?? value
-  if (field === 'description' || field === 'short_description') {
-    const text = String(value).replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ').trim()
+  // Descriptions and HTML-formatted meta fields (e.g. a cart description) are shown as plain text.
+  if (field === 'description' || field === 'short_description' || (isMetaField(field) && /<[a-z][^>]*>/i.test(String(value)))) {
+    const text = String(value).replace(/<\/?(p|div|br|li|h[1-6]|ul|ol|blockquote|hr)\b[^>]*>/gi, ' ').replace(/<[^>]*>/g, '').replace(/\s+/g, ' ').trim()
     return text.length > 160 ? `${text.slice(0, 157)}...` : text
   }
   return String(value)
