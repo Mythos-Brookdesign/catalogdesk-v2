@@ -1,15 +1,22 @@
 import { useEffect, useId, useState } from 'react'
 import { ArrowLeft, ArrowRight, Check, Clock, ImageOff, ImagePlus, LoaderCircle, Search, Upload, X } from 'lucide-react'
 import type { MediaItem, PendingMedia, ProductImage } from '../../types/desktop'
-import { acceptedImageTypes, imageSource, useFileDrop, useImageUpload, type PendingMap } from './media'
+import { acceptedImageTypes, imageSource, mediaThumb, useFileDrop, useImageUpload, type PendingMap } from './media'
 
 const accepted = acceptedImageTypes.join(',')
+
+// Media library image: the cached thumbnail, falling back to the given URL (e.g. not imported yet).
+export function CachedImage({ id, fallback }: { id: number; fallback: string }) {
+  const [failed, setFailed] = useState(false)
+  if (failed && !fallback) return <ImageOff size={20} aria-hidden="true" />
+  return <img src={failed ? fallback : mediaThumb(id)} alt="" loading="lazy" decoding="async" draggable={false} onError={() => setFailed(true)} />
+}
 
 function Thumb({ image, pending, size = 'medium' }: { image: Pick<ProductImage, 'id' | 'src' | 'name'>; pending: PendingMap; size?: 'small' | 'medium' }) {
   const src = imageSource(image, pending)
   const waiting = image.id < 0 ? pending.get(image.id) : null
   return <span className={`image-thumb ${size}`}>
-    {src ? <img src={src} alt="" loading="lazy" decoding="async" draggable={false} /> : <ImageOff size={size === 'small' ? 14 : 20} aria-hidden="true" />}
+    {image.id > 0 ? <CachedImage key={image.id} id={image.id} fallback={src} /> : src ? <img src={src} alt="" draggable={false} /> : <ImageOff size={size === 'small' ? 14 : 20} aria-hidden="true" />}
     {image.id < 0 && <span className={`image-badge ${waiting?.state === 'failed' ? 'failed' : 'waiting'}`} title={waiting?.error ?? 'Wird beim naechsten Abgleich in die Mediathek hochgeladen.'}>
       {waiting?.state === 'failed' ? 'Fehler' : <><Clock size={10} />Upload</>}
     </span>}
@@ -43,7 +50,16 @@ export function MediaPicker({ multiple, pending, onPendingAdded, onSelect, onCan
   useEffect(() => {
     if (!desktop) return
     let cancelled = false
-    desktop.listMediaLibrary({ search: query, page }).then((result) => {
+    // The local copy of the media library (offline, fast); online only if it has never been imported.
+    async function load() {
+      const local = await desktop!.listMedia({ query, page: page - 1, pageSize: 40 })
+      if (local.ok && local.value.imported) {
+        const found = local.value.items.filter((item) => item.changeOperation !== 'delete' && !item.upload).map((item) => ({ id: item.id, src: item.sourceUrl, thumb: item.thumbUrl, alt: item.alt, name: item.title || item.filename }))
+        return { ok: true as const, value: { items: found, pages: Math.max(1, Math.ceil(local.value.total / 40)), canUpload: local.value.canEdit } }
+      }
+      return desktop!.listMediaLibrary({ search: query, page })
+    }
+    load().then((result) => {
       if (cancelled) return
       if (!result.ok) { setError(result.error); return }
       setError('')
@@ -97,7 +113,7 @@ export function MediaPicker({ multiple, pending, onPendingAdded, onSelect, onCan
       <h3 className="media-heading">Mediathek</h3>
       {error && <p className="media-status" role="status">{error}</p>}
       {!error && !loading && !items.length && <p className="media-status" role="status">{query ? `Keine Bilder zu „${query}“.` : 'Die Mediathek enthaelt noch keine Bilder.'}</p>}
-      <ul className="media-grid">{items.map((item) => tile({ id: item.id, src: item.src, name: item.name, alt: item.alt }, <span className="image-thumb medium"><img src={item.thumb} alt="" loading="lazy" decoding="async" /></span>, item.name || `Bild #${item.id}`))}</ul>
+      <ul className="media-grid">{items.map((item) => tile({ id: item.id, src: item.src, name: item.name, alt: item.alt }, <span className="image-thumb medium"><CachedImage id={item.id} fallback={item.thumb} /></span>, item.name || `Bild #${item.id}`))}</ul>
       {loading && <p className="media-status" role="status"><LoaderCircle className="spin" size={14} />Mediathek wird geladen ...</p>}
       {!loading && !error && page < pages && <button type="button" className="button media-more" onClick={() => { setLoading(true); setPage(page + 1) }}>Weitere Bilder laden</button>}
     </div>

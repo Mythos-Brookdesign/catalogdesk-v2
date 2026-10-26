@@ -67,11 +67,30 @@ export type CatalogUser = {
   role: 'admin' | 'employee'
   permissions: MenuSection[]
 }
-export type MenuSection = 'dashboard' | 'products' | 'orders' | 'customers' | 'settings' | 'users' | 'shop' | 'taxonomies' | 'sync' | 'history' | 'plugins'
+export type MenuSection = 'dashboard' | 'products' | 'orders' | 'customers' | 'settings' | 'users' | 'shop' | 'taxonomies' | 'sync' | 'history' | 'plugins' | 'media'
 export type UserInput = AdminProfile & { id?: string; role: CatalogUser['role']; permissions: MenuSection[] }
 // Image as WooCommerce stores it on a product; a negative ID is an upload that waits for the shop.
 export type ProductImage = { id: number; src: string; name: string; alt: string }
 export type MediaItem = { id: number; src: string; thumb: string; alt: string; name: string }
+export type MediaFieldKey = 'title' | 'alt' | 'caption' | 'description'
+export type MediaChangeCounts = { pending: number; failed: number; conflict: number }
+// Item of the local media library copy, with queued edits applied.
+export type MediaLibraryItem = {
+  id: number; title: string; alt: string; caption: string; description: string; filename: string; mime: string
+  width: number | null; height: number | null; filesize: number | null; sourceUrl: string; thumbUrl: string
+  uploadedAt: string | null; modifiedAt: string | null; editable: boolean; usage?: number
+  // Set for uploads that have not reached WordPress yet (negative ID, thumbUrl is a local preview).
+  upload?: 'pending' | 'failed'; createdAt?: string
+  changeState: 'pending' | 'failed' | 'conflict' | null; changeError: string | null; changeOperation?: 'update' | 'delete' | null; blockedBy?: MediaPlace[] | null
+  changes: Partial<Record<MediaFieldKey, string>> | null; base: Partial<Record<MediaFieldKey, string>> | null; remote: Partial<Record<MediaFieldKey, string>> | null
+}
+export type MediaUsage = { productId: number | null; parentId: number | null; termId?: number; name: string; role: string }
+// A place in WordPress that still uses an image (found right before deleting it).
+export type MediaPlace = { kind: string; title: string; where: string; link?: string }
+export type MediaLibraryState = { imported: boolean; importedAt: string | null; syncedAt: string | null; lastModified: string | null; trash: boolean | null; count: number; readOnly: number; uploads: number; changeCounts: MediaChangeCounts }
+export type MediaListResult = MediaLibraryState & { items: MediaLibraryItem[]; total: number; page: number; pageSize: number; canEdit: boolean }
+export type MediaFilter = 'all' | 'unused' | 'noAlt' | 'changed' | 'pending'
+export type MediaProgress = { label: string; page: number; pages: number }
 export type PendingMedia = { id: number; name: string; thumbnail: string | null; state: 'pending' | 'failed'; error: string | null }
 export type UserResult<Value> = { ok: true; value: Value } | { ok: false; error: string }
 
@@ -182,6 +201,17 @@ declare global {
       listMediaLibrary: (query: { search?: string; page?: number }) => Promise<UserResult<{ items: MediaItem[]; page: number; pages: number; canUpload: boolean }>>
       listPendingMedia: () => Promise<UserResult<PendingMedia[]>>
       uploadMedia: (file: { name: string; type: string; data: Uint8Array }) => Promise<UserResult<PendingMedia>>
+      listMedia: (query: { query?: string; filter?: MediaFilter; page?: number; pageSize?: number }) => Promise<UserResult<MediaListResult>>
+      mediaDetail: (mediaId: number) => Promise<UserResult<MediaLibraryItem & { usedIn: MediaUsage[] }>>
+      syncMediaLibrary: (full?: boolean) => Promise<UserResult<MediaLibraryState & { stored: number; removed: number; changed: number; full: boolean; sync: { synced: number; failed: number; conflicts: number; offline: boolean } | null }>>
+      changeMedia: (mediaId: number, values: Partial<Record<MediaFieldKey, string>>) => Promise<UserResult<{ queued: boolean; outcome: 'success' | 'failure' | 'conflict' | null; conflicts: string[]; error: string | null }>>
+      discardMediaChange: (mediaId: number) => Promise<UserResult<true>>
+      resolveMediaConflict: (mediaId: number, name: string, resolutions: Partial<Record<MediaFieldKey, 'mine' | 'shop'>>) => Promise<UserResult<true>>
+      deleteMedia: (mediaId: number) => Promise<UserResult<{ queued: boolean; removedFrom: { productId: number; parentId: number | null; name: string }[]; outcome: 'success' | 'failure' | 'held' | null; trashed: boolean | null; places: MediaPlace[]; error: string | null }>>
+      forceDeleteMedia: (mediaId: number) => Promise<UserResult<{ outcome: 'success' | 'failure' | 'held' | null; trashed: boolean | null; error: string | null }>>
+      retryMediaChanges: () => Promise<UserResult<{ synced: number; failed: number; conflicts: number; offline: boolean }>>
+      onMediaChanged: (listener: () => void) => () => void
+      onMediaProgress: (listener: (progress: MediaProgress) => void) => () => void
       onAuditAppended: (listener: () => void) => () => void
       onTaxonomyImportProgress: (listener: (progress: TaxonomyImportProgress) => void) => () => void
     }

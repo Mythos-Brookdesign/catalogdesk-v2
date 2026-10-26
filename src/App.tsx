@@ -7,6 +7,7 @@ import {
   Database,
   GitCompareArrows,
   History,
+  Images,
   LayoutDashboard,
   LogOut,
   PlugZap,
@@ -26,6 +27,7 @@ import { AppearanceSettingsPage } from './features/settings/AppearanceSettingsPa
 import { TaxonomiesPage } from './features/taxonomies/TaxonomiesPage'
 import { HistoryPage } from './features/history/HistoryPage'
 import { PluginsPage } from './features/plugins/PluginsPage'
+import { MediaPage } from './features/media/MediaPage'
 import type { CatalogUser } from './types/desktop'
 
 type Section =
@@ -40,10 +42,12 @@ type Section =
   | 'sync'
   | 'history'
   | 'plugins'
+  | 'media'
 
 const sectionTitles: Record<Section, string> = {
   dashboard: 'Dashboard',
   products: 'Produkte',
+  media: 'Mediathek',
   orders: 'Bestellungen',
   customers: 'Kunden',
   settings: 'Einstellungen',
@@ -61,6 +65,7 @@ const menuGroups = [
     entries: [
       { section: 'dashboard', icon: LayoutDashboard },
       { section: 'products', icon: Boxes },
+      { section: 'media', icon: Images },
       { section: 'orders', icon: ShoppingBag },
       { section: 'customers', icon: UsersRound },
     ],
@@ -193,7 +198,8 @@ function App({
         {canAccess(activeSection) && activeSection === 'taxonomies' && <TaxonomiesPage />}
         {canAccess(activeSection) && activeSection === 'history' && <HistoryPage />}
         {canAccess(activeSection) && activeSection === 'plugins' && <PluginsPage />}
-        {canAccess(activeSection) && !['dashboard', 'products', 'users', 'settings', 'shop', 'taxonomies', 'history', 'plugins'].includes(activeSection) && (
+        {canAccess(activeSection) && activeSection === 'media' && <MediaPage />}
+        {canAccess(activeSection) && !['dashboard', 'products', 'users', 'settings', 'shop', 'taxonomies', 'history', 'plugins', 'media'].includes(activeSection) && (
           <EmptySection title={sectionTitles[activeSection]} />
         )}
       </div>

@@ -118,6 +118,37 @@ const auditQuerySchema = z.object({
   page: z.number().int().min(0).max(1_000_000).default(0),
   pageSize: z.number().int().min(1).max(200).default(100),
 }).strict()
+const mediaItemSchema = z.object({
+  mediaId: z.number().int().positive(),
+  title: z.string().max(1000), alt: z.string().max(1000), caption: z.string().max(10_000), description: z.string().max(50_000),
+  filename: z.string().max(500), mime: z.string().max(100),
+  width: z.number().int().nonnegative().nullable(), height: z.number().int().nonnegative().nullable(), filesize: z.number().int().nonnegative().nullable(),
+  sourceUrl: z.string().url().max(2048), thumbUrl: z.string().url().max(2048),
+  uploadedAt: z.string().max(40).nullable(), modifiedAt: z.string().max(40).nullable(), editable: z.boolean(),
+}).strict()
+// Images a product shows (WooCommerce format: images[] and a variation's image) as provisional media library
+// entries: known before the media library is read from WordPress, replaced by the full data when it is.
+function productImageItems(payload) {
+  const images = [...(Array.isArray(payload?.images) ? payload.images : []), ...(payload?.image && typeof payload.image === 'object' ? [payload.image] : [])]
+  return images.flatMap((image) => {
+    const id = Number(image?.id)
+    const src = typeof image?.src === 'string' ? image.src : ''
+    if (!Number.isSafeInteger(id) || id <= 0 || !/^https?:\/\//.test(src) || src.length > 2048) return []
+    const text = (value, limit) => (typeof value === 'string' ? value.slice(0, limit) : '')
+    const thumb = typeof image.thumbnail === 'string' && /^https?:\/\//.test(image.thumbnail) && image.thumbnail.length <= 2048 ? image.thumbnail : src
+    let filename = ''
+    try { filename = decodeURIComponent(new URL(src).pathname.split('/').pop() ?? '').slice(0, 500) } catch { /* keep empty */ }
+    return [{ mediaId: id, title: text(image.name, 1000), alt: text(image.alt, 1000), filename, sourceUrl: src, thumbUrl: thumb, uploadedAt: text(image.date_created_gmt, 40) || null }]
+  })
+}
+const insertProductImage = (database) => database.prepare(`INSERT INTO media_items (shop_url, media_id, title, alt, filename, source_url, thumb_url, uploaded_at, editable)
+  VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0) ON CONFLICT(shop_url, media_id) DO NOTHING`)
+
+// Editable texts of a media item; the key is the media library field (alt = alt_text).
+const mediaFields = { title: 'Titel', alt: 'Alt-Text', caption: 'Beschriftung', description: 'Beschreibung' }
+const mediaValuesSchema = z.object({
+  title: z.string().trim().max(1000), alt: z.string().trim().max(1000), caption: z.string().trim().max(10_000), description: z.string().trim().max(50_000),
+}).partial().strict()
 const productChangeSchema = z.object({
   shopUrl: shopUrlSchema,
   productId: z.number().int().positive(),
@@ -136,7 +167,7 @@ const newAdminSchema = z.object({
   salt: z.string().regex(/^[a-f0-9]{32}$/),
   passwordHash: z.string().regex(/^[a-f0-9]{128}$/),
 }).strict()
-const menuPermissions = z.array(z.enum(['dashboard', 'products', 'orders', 'customers', 'settings', 'users', 'shop', 'taxonomies', 'sync', 'history', 'plugins'])).max(11)
+const menuPermissions = z.array(z.enum(['dashboard', 'products', 'orders', 'customers', 'settings', 'users', 'shop', 'taxonomies', 'sync', 'history', 'plugins', 'media'])).max(12)
 const managedUserSchema = newAdminSchema.omit({ salt: true, passwordHash: true }).extend({
   id: z.string().uuid().optional(),
   role: z.enum(['admin', 'employee']),
@@ -152,7 +183,7 @@ function openDatabase(filename) {
     database.exec('PRAGMA busy_timeout = 5000; PRAGMA foreign_keys = ON; PRAGMA journal_mode = WAL; PRAGMA synchronous = FULL;')
     database.exec('BEGIN IMMEDIATE')
     const version = database.prepare('PRAGMA user_version').get().user_version
-    if (version > 16) throw new Error('Database schema is newer than this app.')
+    if (version > 20) throw new Error('Database schema is newer than this app.')
     if (version < 1) {
       database.exec(`
         CREATE TABLE shops (
@@ -469,6 +500,74 @@ function openDatabase(filename) {
         ) STRICT;
         PRAGMA user_version = 16;`)
     }
+    if (version < 17) {
+      // Local copy of the WordPress media library (images), its queued edits and the sync position.
+      // `editable` marks items read with an application password (raw texts, not rendered HTML).
+      database.exec(`CREATE TABLE IF NOT EXISTS media_items (
+          shop_url TEXT NOT NULL,
+          media_id INTEGER NOT NULL,
+          title TEXT NOT NULL DEFAULT '',
+          alt TEXT NOT NULL DEFAULT '',
+          caption TEXT NOT NULL DEFAULT '',
+          description TEXT NOT NULL DEFAULT '',
+          filename TEXT NOT NULL DEFAULT '',
+          mime TEXT NOT NULL DEFAULT '',
+          width INTEGER,
+          height INTEGER,
+          filesize INTEGER,
+          source_url TEXT NOT NULL,
+          thumb_url TEXT NOT NULL,
+          uploaded_at TEXT,
+          modified_at TEXT,
+          editable INTEGER NOT NULL DEFAULT 0 CHECK(editable IN (0, 1)),
+          PRIMARY KEY(shop_url, media_id)
+        ) STRICT;
+        CREATE TABLE IF NOT EXISTS media_changes (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          shop_url TEXT NOT NULL,
+          media_id INTEGER NOT NULL,
+          changes TEXT NOT NULL CHECK(json_valid(changes)),
+          base TEXT NOT NULL CHECK(json_valid(base)),
+          remote TEXT CHECK(remote IS NULL OR json_valid(remote)),
+          state TEXT NOT NULL DEFAULT 'pending' CHECK(state IN ('pending', 'failed', 'conflict')),
+          error TEXT,
+          revision INTEGER NOT NULL DEFAULT 0,
+          created_at TEXT NOT NULL,
+          updated_at TEXT NOT NULL,
+          UNIQUE(shop_url, media_id)
+        ) STRICT;
+        CREATE TABLE IF NOT EXISTS media_library_state (
+          shop_url TEXT PRIMARY KEY,
+          imported_at TEXT NOT NULL,
+          synced_at TEXT NOT NULL,
+          last_modified TEXT
+        ) STRICT;
+        PRAGMA user_version = 17;`)
+    }
+    if (version < 18) {
+      // Images of products imported before the media library existed belong to it right away.
+      const insert = insertProductImage(database)
+      for (const row of database.prepare('SELECT shop_url AS shopUrl, payload FROM products').all())
+        for (const item of productImageItems(JSON.parse(row.payload))) insert.run(row.shopUrl, item.mediaId, item.title, item.alt, item.filename, item.sourceUrl, item.thumbUrl, item.uploadedAt)
+      database.exec('PRAGMA user_version = 18;')
+    }
+    if (version < 19) {
+      // Deleting an image is queued like an edit; `products` are the products it was removed from first.
+      const columns = new Set(database.prepare('PRAGMA table_info(media_changes)').all().map((column) => column.name))
+      if (!columns.has('operation')) database.exec("ALTER TABLE media_changes ADD COLUMN operation TEXT NOT NULL DEFAULT 'update' CHECK(operation IN ('update', 'delete'))")
+      if (!columns.has('products')) database.exec("ALTER TABLE media_changes ADD COLUMN products TEXT NOT NULL DEFAULT '[]'")
+      database.exec('PRAGMA user_version = 19;')
+    }
+    if (version < 20) {
+      // A deletion found in use in WordPress is held with its places (`usage`) until the user forces it.
+      // `trash`: whether WordPress keeps deleted media in its trash (MEDIA_TRASH), learned from the first deletion.
+      const changeColumns = new Set(database.prepare('PRAGMA table_info(media_changes)').all().map((column) => column.name))
+      if (!changeColumns.has('usage')) database.exec('ALTER TABLE media_changes ADD COLUMN usage TEXT CHECK(usage IS NULL OR json_valid(usage))')
+      if (!changeColumns.has('force')) database.exec('ALTER TABLE media_changes ADD COLUMN force INTEGER NOT NULL DEFAULT 0 CHECK(force IN (0, 1))')
+      const stateColumns = new Set(database.prepare('PRAGMA table_info(media_library_state)').all().map((column) => column.name))
+      if (!stateColumns.has('trash')) database.exec('ALTER TABLE media_library_state ADD COLUMN trash INTEGER CHECK(trash IS NULL OR trash IN (0, 1))')
+      database.exec('PRAGMA user_version = 20;')
+    }
     database.exec('COMMIT')
   } catch (error) {
     if (database.isTransaction) database.exec('ROLLBACK')
@@ -586,7 +685,55 @@ function openDatabase(filename) {
     return row.state === 'done' ? { ...image, id: row.mediaId, src: row.sourceUrl ?? '' } : { ...image, src: '', name: image.name || row.filename }
   }
 
+  // Where each media item is used: product images and gallery, variation images and module image fields
+  // (e.g. Yoast's social image), with queued edits applied.
+  function mediaUsage(shopUrl) {
+    const usage = new Map()
+    // Negative IDs are uploads that wait for WordPress; they count like media library items.
+    const add = (id, entry) => { if (Number(id)) usage.set(Number(id), [...(usage.get(Number(id)) ?? []), entry]) }
+    const imageFields = mediaIdFields().filter((field) => activeModuleIds(shopUrl).includes(field.module))
+    const rows = database.prepare(`SELECT p.product_id AS id, p.parent_id AS parentId, coalesce(json_extract(c.changes, '$.name'), p.name) AS name,
+        CASE WHEN c.id IS NULL THEN p.payload ELSE json_patch(p.payload, c.changes) END AS payload
+      FROM products p LEFT JOIN product_changes c ON c.shop_url = p.shop_url AND c.product_id = p.product_id WHERE p.shop_url = ?`).all(shopUrl)
+    for (const row of rows) {
+      const payload = JSON.parse(row.payload)
+      const product = { productId: row.id, parentId: row.parentId, name: row.name }
+      if (Array.isArray(payload.images)) payload.images.forEach((image, index) => add(image?.id, { ...product, role: index === 0 ? 'Produktbild' : 'Galerie' }))
+      if (payload.image && typeof payload.image === 'object') add(payload.image.id, { ...product, role: 'Variantenbild' })
+      for (const field of imageFields) add(fieldValue(payload, field.field), { ...product, role: field.label.replace(/ \(Medien-ID\)$/, '') })
+    }
+    // Term images (e.g. product categories) are kept as they are when an image is deleted; they hold a deletion.
+    for (const term of database.prepare(`SELECT t.term_id AS termId, t.name, coalesce(x.label, t.taxonomy) AS taxonomy, json_extract(t.payload, '$.image.id') AS imageId
+      FROM taxonomy_terms t LEFT JOIN taxonomies x ON x.shop_url = t.shop_url AND x.taxonomy = t.taxonomy WHERE t.shop_url = ? AND json_extract(t.payload, '$.image.id') > 0`).all(shopUrl))
+      add(term.imageId, { productId: null, parentId: null, termId: term.termId, name: term.name, role: `Bild in ${term.taxonomy}` })
+    return usage
+  }
+  const mediaRow = `m.media_id AS id, coalesce(json_extract(c.changes, '$.title'), m.title) AS title, coalesce(json_extract(c.changes, '$.alt'), m.alt) AS alt,
+    coalesce(json_extract(c.changes, '$.caption'), m.caption) AS caption, coalesce(json_extract(c.changes, '$.description'), m.description) AS description,
+    m.filename, m.mime, m.width, m.height, m.filesize, m.source_url AS sourceUrl, m.thumb_url AS thumbUrl, m.uploaded_at AS uploadedAt, m.modified_at AS modifiedAt,
+    m.editable, c.state AS changeState, c.error AS changeError, c.operation AS changeOperation, c.usage AS blockedBy, c.changes, c.base, c.remote`
+  // Uploads that have not reached WordPress, in the form of media library items (negative ID, `upload` state).
+  function uploadRows(shopUrl, id = null) {
+    return database.prepare(`SELECT id, filename, mime, size, thumbnail, state, error, created_at AS createdAt FROM media_uploads
+      WHERE shop_url = ? AND state != 'done' ${id ? 'AND id = ?' : ''} ORDER BY id DESC`).all(...(id ? [shopUrl, id] : [shopUrl])).map((row) => ({
+      id: -row.id, title: '', alt: '', caption: '', description: '', filename: row.filename, mime: row.mime, width: null, height: null, filesize: row.size,
+      sourceUrl: '', thumbUrl: row.thumbnail ?? '', uploadedAt: null, modifiedAt: null, createdAt: row.createdAt, editable: false,
+      changeState: null, changeError: row.error, changes: null, base: null, remote: null, upload: row.state,
+    }))
+  }
+  const toMediaRow = (row) => ({ ...row, editable: row.editable === 1, blockedBy: row.blockedBy ? JSON.parse(row.blockedBy) : null, changes: row.changes ? JSON.parse(row.changes) : null, base: row.base ? JSON.parse(row.base) : null, remote: row.remote ? JSON.parse(row.remote) : null })
+  function upsertMediaItems(shopUrl, items) {
+    const upsert = database.prepare(`INSERT INTO media_items (shop_url, media_id, title, alt, caption, description, filename, mime, width, height, filesize, source_url, thumb_url, uploaded_at, modified_at, editable)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(shop_url, media_id) DO UPDATE SET title = excluded.title, alt = excluded.alt, caption = excluded.caption, description = excluded.description, filename = excluded.filename,
+        mime = excluded.mime, width = excluded.width, height = excluded.height, filesize = excluded.filesize, source_url = excluded.source_url, thumb_url = excluded.thumb_url,
+        uploaded_at = excluded.uploaded_at, modified_at = excluded.modified_at, editable = excluded.editable`)
+    for (const item of items) upsert.run(shopUrl, item.mediaId, item.title, item.alt, item.caption, item.description, item.filename, item.mime, item.width, item.height, item.filesize, item.sourceUrl, item.thumbUrl, item.uploadedAt, item.modifiedAt, item.editable ? 1 : 0)
+  }
+
+  // Re-entrant: an operation that combines others (e.g. deleting an image edits products) runs in one transaction.
   function transaction(action) {
+    if (database.isTransaction) return action()
     database.exec('BEGIN IMMEDIATE')
     try {
       const result = action()
@@ -619,8 +766,10 @@ function openDatabase(filename) {
     const insertTerm = database.prepare('INSERT INTO taxonomy_terms (shop_url, taxonomy, term_id, name, slug, payload) VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT(shop_url, taxonomy, term_id) DO NOTHING')
     const insertRelation = database.prepare('INSERT INTO product_taxonomies (shop_url, product_id, taxonomy, term_id, field) VALUES (?, ?, ?, ?, ?) ON CONFLICT DO NOTHING')
     const insertAttribute = database.prepare('INSERT INTO product_attributes (shop_url, product_id, attribute_position, attribute_id, name, slug, variation, options) VALUES (?, ?, ?, ?, ?, ?, ?, ?)')
+    const insertImage = insertProductImage(database)
     return (product, stats = { relations: 0, unresolved: 0 }) => {
       upsertProduct.run(shopUrl, product.id, product.parentId, product.type, product.productType ?? product.type, product.sku, product.name, product.status, JSON.stringify(product.payload))
+      for (const item of productImageItems(product.payload)) insertImage.run(shopUrl, item.mediaId, item.title, item.alt, item.filename, item.sourceUrl, item.thumbUrl, item.uploadedAt)
       clearRelations.run(shopUrl, product.id)
       clearAttributes.run(shopUrl, product.id)
       for (const term of product.terms) {
@@ -1350,6 +1499,176 @@ function openDatabase(filename) {
       database.prepare('UPDATE product_changes SET state = ?, error = ?, remote = ? WHERE id = ? AND revision = ?').run(parsed.state, parsed.error, parsed.remote ? JSON.stringify(parsed.remote) : null, parsed.changeId, parsed.revision)
       return true
     },
+    // Stores media read from WordPress. `ids` (all IDs currently in the library) removes deleted items;
+    // without it only the given items are added or updated.
+    storeMediaLibrary(input) {
+      const parsed = z.object({ shopUrl: shopUrlSchema, syncedAt: z.string().datetime(), items: z.array(mediaItemSchema).max(200_000), ids: z.array(z.number().int().positive()).max(200_000).nullable() }).strict().parse(input)
+      return transaction(() => {
+        upsertMediaItems(parsed.shopUrl, parsed.items)
+        let removed = 0
+        if (parsed.ids) {
+          const ids = JSON.stringify(parsed.ids)
+          removed = database.prepare('DELETE FROM media_items WHERE shop_url = ? AND media_id NOT IN (SELECT value FROM json_each(?))').run(parsed.shopUrl, ids).changes
+          database.prepare('DELETE FROM media_changes WHERE shop_url = ? AND media_id NOT IN (SELECT value FROM json_each(?))').run(parsed.shopUrl, ids)
+        }
+        const lastModified = database.prepare('SELECT max(modified_at) AS last FROM media_items WHERE shop_url = ?').get(parsed.shopUrl).last
+        database.prepare(`INSERT INTO media_library_state (shop_url, imported_at, synced_at, last_modified) VALUES (?, ?, ?, ?)
+          ON CONFLICT(shop_url) DO UPDATE SET synced_at = excluded.synced_at, last_modified = excluded.last_modified`).run(parsed.shopUrl, parsed.syncedAt, parsed.syncedAt, lastModified)
+        return { stored: parsed.items.length, removed, ...this.mediaLibraryState({ shopUrl: parsed.shopUrl }) }
+      })
+    },
+    mediaThumb(input) {
+      const parsed = z.object({ shopUrl: shopUrlSchema, mediaId: z.number().int().positive() }).strict().parse(input)
+      return database.prepare('SELECT thumb_url AS thumbUrl FROM media_items WHERE shop_url = ? AND media_id = ?').get(parsed.shopUrl, parsed.mediaId)?.thumbUrl ?? null
+    },
+    mediaLibraryState(input) {
+      const parsed = z.object({ shopUrl: shopUrlSchema }).strict().parse(input)
+      const state = database.prepare('SELECT imported_at AS importedAt, synced_at AS syncedAt, last_modified AS lastModified, trash FROM media_library_state WHERE shop_url = ?').get(parsed.shopUrl)
+      const { count, readOnly } = database.prepare('SELECT COUNT(*) AS count, coalesce(sum(editable = 0), 0) AS readOnly FROM media_items WHERE shop_url = ?').get(parsed.shopUrl)
+      const uploads = database.prepare("SELECT COUNT(*) AS count FROM media_uploads WHERE shop_url = ? AND state != 'done'").get(parsed.shopUrl).count
+      return { imported: Boolean(state), importedAt: state?.importedAt ?? null, syncedAt: state?.syncedAt ?? null, lastModified: state?.lastModified ?? null, trash: state?.trash === undefined || state?.trash === null ? null : state.trash === 1, count, readOnly, uploads, changeCounts: this.mediaChangeCounts({ shopUrl: parsed.shopUrl }) }
+    },
+    // Media library page and image picker: queued edits applied, filtered and paged in memory (usage needs all products).
+    listMedia(input) {
+      const parsed = z.object({
+        shopUrl: shopUrlSchema, query: z.string().trim().max(200).default(''), filter: z.enum(['all', 'unused', 'noAlt', 'changed', 'pending']).default('all'),
+        page: z.number().int().nonnegative().max(100_000).default(0), pageSize: z.number().int().min(1).max(200).default(60),
+      }).strict().parse(input)
+      const usage = mediaUsage(parsed.shopUrl)
+      const needle = parsed.query.toLowerCase()
+      // Uploads still waiting for WordPress come first; they are part of the library from the moment they are picked.
+      const library = database.prepare(`SELECT ${mediaRow} FROM media_items m LEFT JOIN media_changes c ON c.shop_url = m.shop_url AND c.media_id = m.media_id
+        WHERE m.shop_url = ? ORDER BY coalesce(m.uploaded_at, '') DESC, m.media_id DESC`).all(parsed.shopUrl).map(toMediaRow)
+      const matches = {
+        all: () => true, unused: (row) => !row.usage, noAlt: (row) => !row.upload && !row.alt.trim(),
+        changed: (row) => Boolean(row.changeState || row.upload), pending: (row) => Boolean(row.upload),
+      }[parsed.filter]
+      const rows = [...uploadRows(parsed.shopUrl), ...library]
+        .map((row) => ({ ...row, usage: usage.get(row.id)?.length ?? 0 }))
+        .filter((row) => !needle || [row.title, row.alt, row.filename].some((value) => value.toLowerCase().includes(needle)))
+        .filter(matches)
+      return { items: rows.slice(parsed.page * parsed.pageSize, (parsed.page + 1) * parsed.pageSize), total: rows.length, page: parsed.page, pageSize: parsed.pageSize, ...this.mediaLibraryState({ shopUrl: parsed.shopUrl }) }
+    },
+    mediaDetail(input) {
+      const parsed = z.object({ shopUrl: shopUrlSchema, mediaId: z.number().int().refine((id) => id !== 0) }).strict().parse(input)
+      const usedIn = mediaUsage(parsed.shopUrl).get(parsed.mediaId) ?? []
+      if (parsed.mediaId < 0) {
+        const [upload] = uploadRows(parsed.shopUrl, -parsed.mediaId)
+        if (!upload) throw new Error('Medium: Das Bild ist bereits in WordPress. Bitte die Mediathek neu laden.')
+        return { ...upload, usedIn }
+      }
+      const row = database.prepare(`SELECT ${mediaRow} FROM media_items m LEFT JOIN media_changes c ON c.shop_url = m.shop_url AND c.media_id = m.media_id WHERE m.shop_url = ? AND m.media_id = ?`).get(parsed.shopUrl, parsed.mediaId)
+      if (!row) throw new Error('Medium: Das Bild ist nicht (mehr) in der Mediathek. Bitte abgleichen.')
+      return { ...toMediaRow(row), usedIn }
+    },
+    mediaChangeCounts(input) {
+      const parsed = z.object({ shopUrl: shopUrlSchema }).strict().parse(input)
+      const rows = database.prepare('SELECT state, COUNT(*) AS count FROM media_changes WHERE shop_url = ? GROUP BY state').all(parsed.shopUrl)
+      const count = (state) => rows.find((row) => row.state === state)?.count ?? 0
+      return { pending: count('pending'), failed: count('failed'), conflict: count('conflict') }
+    },
+    queueMediaChange(input) {
+      const parsed = z.object({ shopUrl: shopUrlSchema, mediaId: z.number().int().positive(), values: mediaValuesSchema }).strict().parse(input)
+      return transaction(() => {
+        const item = database.prepare('SELECT title, alt, caption, description, filename, editable FROM media_items WHERE shop_url = ? AND media_id = ?').get(parsed.shopUrl, parsed.mediaId)
+        if (!item) throw new Error('Medium: Das Bild ist nicht (mehr) in der Mediathek. Bitte abgleichen.')
+        const existing = database.prepare('SELECT id, changes, base, operation FROM media_changes WHERE shop_url = ? AND media_id = ?').get(parsed.shopUrl, parsed.mediaId)
+        if (existing?.operation === 'delete') throw new Error('Medium: Das Bild ist zum Loeschen vorgemerkt.')
+        if (!item.editable) throw new Error('Medium: Zum Bearbeiten bitte ein Anwendungspasswort hinterlegen und die Mediathek abgleichen.')
+        const changes = existing ? JSON.parse(existing.changes) : {}
+        const base = existing ? JSON.parse(existing.base) : {}
+        const before = {}
+        for (const [field, value] of Object.entries(parsed.values)) {
+          before[field] = field in changes ? changes[field] : item[field]
+          const original = field in base ? base[field] : item[field]
+          if (value === original) { delete changes[field]; delete base[field] }
+          else { changes[field] = value; base[field] = original }
+        }
+        const result = { mediaId: parsed.mediaId, name: (changes.title ?? item.title) || item.filename, before, after: parsed.values, labels: mediaFields }
+        const now = new Date().toISOString()
+        if (!Object.keys(changes).length) {
+          if (existing) database.prepare('DELETE FROM media_changes WHERE id = ?').run(existing.id)
+          return { ...result, queued: false }
+        }
+        if (existing) database.prepare("UPDATE media_changes SET changes = ?, base = ?, remote = NULL, state = 'pending', error = NULL, revision = revision + 1, updated_at = ? WHERE id = ?").run(JSON.stringify(changes), JSON.stringify(base), now, existing.id)
+        else database.prepare('INSERT INTO media_changes (shop_url, media_id, changes, base, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)').run(parsed.shopUrl, parsed.mediaId, JSON.stringify(changes), JSON.stringify(base), now, now)
+        return { ...result, queued: true }
+      })
+    },
+    discardMediaChange(input) {
+      const parsed = z.object({ shopUrl: shopUrlSchema, mediaId: z.number().int().positive() }).strict().parse(input)
+      const change = database.prepare('SELECT c.id, c.changes, c.operation, m.title, m.filename FROM media_changes c JOIN media_items m ON m.shop_url = c.shop_url AND m.media_id = c.media_id WHERE c.shop_url = ? AND c.media_id = ?').get(parsed.shopUrl, parsed.mediaId)
+      if (!change) throw new Error('Medium: Aenderung wurde nicht gefunden.')
+      database.prepare('DELETE FROM media_changes WHERE id = ?').run(change.id)
+      return { name: change.title || change.filename, fields: Object.keys(JSON.parse(change.changes)), operation: change.operation }
+    },
+    // After a conflict: "mine" keeps the edit on top of the WordPress value, "shop" takes the WordPress value.
+    resolveMediaConflict(input) {
+      const parsed = z.object({ shopUrl: shopUrlSchema, mediaId: z.number().int().positive(), resolutions: z.partialRecord(z.enum(Object.keys(mediaFields)), z.enum(['mine', 'shop'])) }).strict().parse(input)
+      return transaction(() => {
+        const change = database.prepare("SELECT id, changes, base, remote FROM media_changes WHERE shop_url = ? AND media_id = ? AND state = 'conflict'").get(parsed.shopUrl, parsed.mediaId)
+        if (!change) throw new Error('Medium: Aenderung wurde nicht gefunden.')
+        const changes = JSON.parse(change.changes)
+        const base = JSON.parse(change.base)
+        const remote = JSON.parse(change.remote ?? '{}')
+        for (const field of Object.keys(remote)) if (!parsed.resolutions[field]) throw new Error('Medium: Bitte jeden Konflikt entscheiden.')
+        const kept = []
+        const dropped = []
+        const update = database.prepare('UPDATE media_items SET title = CASE WHEN ? = \'title\' THEN ? ELSE title END, alt = CASE WHEN ? = \'alt\' THEN ? ELSE alt END, caption = CASE WHEN ? = \'caption\' THEN ? ELSE caption END, description = CASE WHEN ? = \'description\' THEN ? ELSE description END WHERE shop_url = ? AND media_id = ?')
+        for (const [field, choice] of Object.entries(parsed.resolutions)) {
+          if (!(field in remote)) continue
+          if (choice === 'mine') { base[field] = remote[field]; kept.push(field) }
+          else { delete changes[field]; delete base[field]; dropped.push(field) }
+          update.run(field, remote[field], field, remote[field], field, remote[field], field, remote[field], parsed.shopUrl, parsed.mediaId)
+        }
+        if (!Object.keys(changes).length) database.prepare('DELETE FROM media_changes WHERE id = ?').run(change.id)
+        else database.prepare("UPDATE media_changes SET changes = ?, base = ?, remote = NULL, state = 'pending', error = NULL, revision = revision + 1, updated_at = ? WHERE id = ?").run(JSON.stringify(changes), JSON.stringify(base), new Date().toISOString(), change.id)
+        return { kept, dropped, remote }
+      })
+    },
+    retryMediaChanges(input) {
+      const parsed = z.object({ shopUrl: shopUrlSchema }).strict().parse(input)
+      database.prepare("UPDATE media_changes SET state = 'pending', error = NULL WHERE shop_url = ? AND state = 'failed'").run(parsed.shopUrl)
+      database.prepare("UPDATE media_uploads SET state = 'pending', error = NULL WHERE shop_url = ? AND state = 'failed'").run(parsed.shopUrl)
+      return true
+    },
+    pendingMediaChanges(input) {
+      const parsed = z.object({ shopUrl: shopUrlSchema }).strict().parse(input)
+      return database.prepare(`SELECT c.id, c.media_id AS mediaId, c.changes, c.base, c.revision, coalesce(nullif(m.title, ''), m.filename) AS name
+        FROM media_changes c JOIN media_items m ON m.shop_url = c.shop_url AND m.media_id = c.media_id WHERE c.shop_url = ? AND c.state = 'pending' AND c.operation = 'update' ORDER BY c.id`).all(parsed.shopUrl)
+        .map((row) => ({ ...row, changes: JSON.parse(row.changes), base: JSON.parse(row.base) }))
+    },
+    // Stores WordPress's answer; fields it did not take over stay as a failed change.
+    completeMediaChange(input) {
+      const parsed = z.object({ changeId: z.number().int().positive(), revision: z.number().int().nonnegative(), item: mediaItemSchema, ignored: z.array(z.enum(Object.keys(mediaFields))).default([]) }).strict().parse(input)
+      return transaction(() => {
+        const change = database.prepare('SELECT id, shop_url AS shopUrl, changes, revision FROM media_changes WHERE id = ?').get(parsed.changeId)
+        if (!change) return false
+        upsertMediaItems(change.shopUrl, [parsed.item])
+        const changes = JSON.parse(change.changes)
+        if (change.revision !== parsed.revision) {
+          // Edited again meanwhile: the answer is the new base; fields already equal are done.
+          const next = Object.fromEntries(Object.entries(changes).filter(([field, value]) => parsed.item[field] !== value))
+          if (!Object.keys(next).length) database.prepare('DELETE FROM media_changes WHERE id = ?').run(change.id)
+          else database.prepare('UPDATE media_changes SET changes = ?, base = ? WHERE id = ?').run(JSON.stringify(next), JSON.stringify(Object.fromEntries(Object.keys(next).map((field) => [field, parsed.item[field]]))), change.id)
+          return true
+        }
+        const remaining = Object.fromEntries(parsed.ignored.filter((field) => field in changes).map((field) => [field, changes[field]]))
+        if (!Object.keys(remaining).length) database.prepare('DELETE FROM media_changes WHERE id = ?').run(change.id)
+        else database.prepare("UPDATE media_changes SET changes = ?, base = ?, state = 'failed', error = ? WHERE id = ?")
+          .run(JSON.stringify(remaining), JSON.stringify(Object.fromEntries(Object.keys(remaining).map((field) => [field, parsed.item[field]]))), `WordPress hat ${Object.keys(remaining).map((field) => mediaFields[field]).join(', ')} nicht uebernommen.`, change.id)
+        return true
+      })
+    },
+    markMediaChange(input) {
+      const parsed = z.object({ changeId: z.number().int().positive(), revision: z.number().int().nonnegative(), state: z.enum(['failed', 'conflict']), error: z.string().max(500).nullable().default(null), remote: z.record(z.string(), z.string()).nullable().default(null), item: mediaItemSchema.nullable().default(null) }).strict().parse(input)
+      return transaction(() => {
+        const change = database.prepare('SELECT shop_url AS shopUrl FROM media_changes WHERE id = ?').get(parsed.changeId)
+        if (change && parsed.item) upsertMediaItems(change.shopUrl, [parsed.item])
+        database.prepare('UPDATE media_changes SET state = ?, error = ?, remote = ? WHERE id = ? AND revision = ?').run(parsed.state, parsed.error, parsed.remote ? JSON.stringify(parsed.remote) : null, parsed.changeId, parsed.revision)
+        return true
+      })
+    },
     addMediaUpload(input) {
       const parsed = z.object({
         shopUrl: shopUrlSchema, file: z.string().regex(/^[a-f0-9-]{36}\.(jpg|png|gif|webp)$/), filename: z.string().min(1).max(255),
@@ -1359,6 +1678,84 @@ function openDatabase(filename) {
       const row = database.prepare('INSERT INTO media_uploads (shop_url, file, filename, mime, size, thumbnail, created_at) VALUES (?, ?, ?, ?, ?, ?, ?) RETURNING id')
         .get(parsed.shopUrl, parsed.file, parsed.filename, parsed.mime, parsed.size, parsed.thumbnail, new Date().toISOString())
       return { id: -row.id, name: parsed.filename, thumbnail: parsed.thumbnail, state: 'pending', error: null }
+    },
+    // Deletes an image: first it is removed from every product that uses it (queued product edits),
+    // then the deletion in WordPress is queued; it is sent once those product edits reached the shop.
+    // A pending upload is simply dropped.
+    deleteMedia(input) {
+      const parsed = z.object({ shopUrl: shopUrlSchema, mediaId: z.number().int().refine((id) => id !== 0) }).strict().parse(input)
+      return transaction(() => {
+        const { shopUrl, mediaId } = parsed
+        const upload = mediaId < 0 ? database.prepare("SELECT id, file, filename FROM media_uploads WHERE shop_url = ? AND id = ? AND state != 'done'").get(shopUrl, -mediaId) : null
+        const item = mediaId > 0 ? database.prepare('SELECT title, filename FROM media_items WHERE shop_url = ? AND media_id = ?').get(shopUrl, mediaId) : null
+        if (!upload && !item) throw new Error('Medium: Das Bild ist nicht (mehr) in der Mediathek.')
+        const name = upload ? upload.filename : item.title || item.filename
+        const imageFields = mediaIdFields().filter((field) => activeModuleIds(shopUrl).includes(field.module))
+        const merged = database.prepare(`SELECT p.parent_id AS parentId, CASE WHEN c.id IS NULL THEN p.payload ELSE json_patch(p.payload, c.changes) END AS payload
+          FROM products p LEFT JOIN product_changes c ON c.shop_url = p.shop_url AND c.product_id = p.product_id WHERE p.shop_url = ? AND p.product_id = ?`)
+        const products = [...new Map((mediaUsage(shopUrl).get(mediaId) ?? []).filter((entry) => entry.productId).map((entry) => [entry.productId, entry])).values()]
+        // An open conflict must be decided first; removing the image would silently override it.
+        const inConflict = products.filter((entry) => database.prepare("SELECT 1 FROM product_changes WHERE shop_url = ? AND product_id = ? AND state = 'conflict'").get(shopUrl, entry.productId))
+        if (inConflict.length) throw new Error(`Medium: Bitte zuerst den Konflikt bei ${inConflict.map((entry) => `„${entry.name}“`).join(', ')} loesen.`)
+        for (const product of products) {
+          const row = merged.get(shopUrl, product.productId)
+          const payload = JSON.parse(row.payload)
+          const values = {}
+          if (row.parentId === null && Array.isArray(payload.images) && payload.images.some((image) => Number(image?.id) === mediaId))
+            values.images = payload.images.filter((image) => Number(image?.id) !== mediaId)
+          if (row.parentId !== null && Number(payload.image?.id) === mediaId) values.image = null
+          for (const field of imageFields) if (String(fieldValue(payload, field.field) ?? '') === String(mediaId)) { values[field.field] = ''; values[field.imageField] = '' }
+          if (Object.keys(values).length) this.queueProductChange({ shopUrl, productId: product.productId, values, terms: {} })
+        }
+        const removedFrom = products.map((entry) => ({ productId: entry.productId, parentId: entry.parentId, name: entry.name }))
+        if (upload) {
+          database.prepare('DELETE FROM media_uploads WHERE id = ?').run(upload.id)
+          return { name, removedFrom, file: upload.file, queued: false }
+        }
+        const now = new Date().toISOString()
+        database.prepare(`INSERT INTO media_changes (shop_url, media_id, changes, base, operation, products, created_at, updated_at) VALUES (?, ?, '{}', '{}', 'delete', ?, ?, ?)
+          ON CONFLICT(shop_url, media_id) DO UPDATE SET changes = '{}', base = '{}', remote = NULL, operation = 'delete', products = excluded.products, usage = NULL, force = 0, state = 'pending', error = NULL, revision = revision + 1, updated_at = excluded.updated_at`)
+          .run(shopUrl, mediaId, JSON.stringify(removedFrom.map((entry) => entry.productId)), now, now)
+        return { name, removedFrom, file: null, queued: true }
+      })
+    },
+    // Deletions whose products have no queued edits left (the removal reached the shop).
+    pendingMediaDeletions(input) {
+      const parsed = z.object({ shopUrl: shopUrlSchema }).strict().parse(input)
+      const usage = mediaUsage(parsed.shopUrl)
+      return database.prepare(`SELECT c.id, c.media_id AS mediaId, c.revision, c.force, coalesce(nullif(m.title, ''), m.filename) AS name, m.thumb_url AS thumbUrl, m.source_url AS sourceUrl
+        FROM media_changes c JOIN media_items m ON m.shop_url = c.shop_url AND m.media_id = c.media_id
+        WHERE c.shop_url = ? AND c.state = 'pending' AND c.operation = 'delete'
+          AND NOT EXISTS (SELECT 1 FROM product_changes pc, json_each(c.products) affected WHERE pc.shop_url = c.shop_url AND pc.product_id = affected.value)
+        ORDER BY c.id`).all(parsed.shopUrl)
+        // Places known locally that the deletion would break (product uses are removed beforehand).
+        .map((row) => ({ ...row, force: row.force === 1, localPlaces: (usage.get(row.mediaId) ?? []).map((entry) => ({ kind: entry.productId ? 'Produkt' : 'Begriff', title: entry.name, where: entry.role })) }))
+    },
+    // Found in use in WordPress: held until the user forces the deletion (or cancels it).
+    holdMediaDeletion(input) {
+      const place = z.object({ kind: z.string().max(200), title: z.string().max(500), where: z.string().max(200), link: z.string().max(2048).optional() }).strict()
+      const parsed = z.object({ changeId: z.number().int().positive(), revision: z.number().int().nonnegative(), places: z.array(place).min(1).max(200), error: z.string().max(500) }).strict().parse(input)
+      database.prepare("UPDATE media_changes SET state = 'failed', usage = ?, error = ? WHERE id = ? AND revision = ? AND operation = 'delete'").run(JSON.stringify(parsed.places), parsed.error, parsed.changeId, parsed.revision)
+      return true
+    },
+    forceMediaDeletion(input) {
+      const parsed = z.object({ shopUrl: shopUrlSchema, mediaId: z.number().int().positive() }).strict().parse(input)
+      const changed = database.prepare("UPDATE media_changes SET force = 1, state = 'pending', error = NULL, revision = revision + 1, updated_at = ? WHERE shop_url = ? AND media_id = ? AND operation = 'delete'")
+        .run(new Date().toISOString(), parsed.shopUrl, parsed.mediaId).changes
+      if (!changed) throw new Error('Medium: Das Bild ist nicht zum Loeschen vorgemerkt.')
+      const row = database.prepare('SELECT coalesce(nullif(title, \'\'), filename) AS name, usage FROM media_items m JOIN media_changes c USING (shop_url, media_id) WHERE m.shop_url = ? AND m.media_id = ?').get(parsed.shopUrl, parsed.mediaId)
+      return { name: row?.name ?? `#${parsed.mediaId}`, places: row?.usage ? JSON.parse(row.usage) : [] }
+    },
+    completeMediaDeletion(input) {
+      const parsed = z.object({ changeId: z.number().int().positive(), trashed: z.boolean() }).strict().parse(input)
+      return transaction(() => {
+        const change = database.prepare("SELECT shop_url AS shopUrl, media_id AS mediaId FROM media_changes WHERE id = ? AND operation = 'delete'").get(parsed.changeId)
+        if (!change) return false
+        database.prepare('UPDATE media_library_state SET trash = ? WHERE shop_url = ?').run(parsed.trashed ? 1 : 0, change.shopUrl)
+        database.prepare('DELETE FROM media_items WHERE shop_url = ? AND media_id = ?').run(change.shopUrl, change.mediaId)
+        database.prepare('DELETE FROM media_changes WHERE id = ?').run(parsed.changeId)
+        return true
+      })
     },
     // Uploads that have not reached the shop yet, with their preview for the editor.
     listMediaUploads(input) {
@@ -1371,10 +1768,12 @@ function openDatabase(filename) {
     },
     // The shop has the file: queued edits get the real media ID (internal bookkeeping, revisions stay).
     completeMediaUpload(input) {
-      const parsed = z.object({ uploadId: z.number().int().positive(), mediaId: z.number().int().positive(), sourceUrl: z.string().url().max(2048) }).strict().parse(input)
+      const parsed = z.object({ uploadId: z.number().int().positive(), mediaId: z.number().int().positive(), sourceUrl: z.string().url().max(2048), item: mediaItemSchema.nullable().default(null) }).strict().parse(input)
       return transaction(() => {
         const upload = database.prepare('SELECT shop_url AS shopUrl, file, filename FROM media_uploads WHERE id = ?').get(parsed.uploadId)
         if (!upload) return null
+        // The new image belongs to the local media library right away, imported or not.
+        if (parsed.item) upsertMediaItems(upload.shopUrl, [parsed.item])
         database.prepare("UPDATE media_uploads SET state = 'done', media_id = ?, source_url = ?, error = NULL, thumbnail = NULL WHERE id = ?").run(parsed.mediaId, parsed.sourceUrl, parsed.uploadId)
         const update = database.prepare('UPDATE product_changes SET changes = ? WHERE id = ?')
         for (const row of database.prepare('SELECT id, changes FROM product_changes WHERE shop_url = ?').all(upload.shopUrl)) {

@@ -8,6 +8,13 @@ export type PendingMap = Map<number, PendingMedia>
 export function usePendingMedia() {
   const desktop = window.catalogDesk
   const [pending, setPending] = useState<PendingMap>(new Map())
+  const [version, setVersion] = useState(0)
+  // Reloaded when a sync finished (uploads done or failed).
+  useEffect(() => {
+    const bump = () => setVersion((value) => value + 1)
+    const stops = [desktop?.onMediaChanged(bump), desktop?.onProductsChanged(bump)]
+    return () => { for (const stop of stops) stop?.() }
+  }, [desktop])
   useEffect(() => {
     if (!desktop) return
     let cancelled = false
@@ -15,11 +22,13 @@ export function usePendingMedia() {
       if (!cancelled && result.ok) setPending(new Map(result.value.map((entry) => [entry.id, entry])))
     }).catch(() => {})
     return () => { cancelled = true }
-  }, [desktop])
+  }, [desktop, version])
   const add = useCallback((entry: PendingMedia) => setPending((current) => new Map(current).set(entry.id, entry)), [])
   return { pending, add }
 }
 
+// Thumbnail from the local media library (cached on disk, also offline); `src` is the fallback.
+export const mediaThumb = (id: number) => `catalog-media://thumb/${id}`
 export const imageSource = (image: Pick<ProductImage, 'id' | 'src'>, pending: PendingMap) =>
   image.id < 0 ? pending.get(image.id)?.thumbnail ?? '' : image.src
 

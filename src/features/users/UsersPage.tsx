@@ -5,7 +5,7 @@ import { useNotify } from '../../components/notifications/notifications'
 import './UsersPage.css'
 
 const sections: [MenuSection, string][] = [
-  ['dashboard', 'Dashboard'], ['products', 'Produkte'], ['orders', 'Bestellungen'],
+  ['dashboard', 'Dashboard'], ['products', 'Produkte'], ['media', 'Mediathek'], ['orders', 'Bestellungen'],
   ['customers', 'Kunden'], ['settings', 'Einstellungen'], ['users', 'Benutzer'],
   ['shop', 'Shopverbindung'], ['plugins', 'Plugins'], ['taxonomies', 'Taxonomien'], ['sync', 'Synchronisation'], ['history', 'Historie'],
 ]

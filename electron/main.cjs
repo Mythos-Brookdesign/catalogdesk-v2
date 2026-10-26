@@ -1,4 +1,5 @@
 const { app, BrowserWindow, ipcMain, nativeImage, net, protocol, safeStorage } = require('electron')
+const { createHash } = require('node:crypto')
 const { mkdirSync } = require('node:fs')
 const { mkdir, readFile, rm, writeFile } = require('node:fs/promises')
 const { randomUUID } = require('node:crypto')
@@ -12,7 +13,7 @@ const { fetchNamespaces, fetchPluginStatus, importTaxonomies } = require('./taxo
 const { syncTaxonomyChanges } = require('./taxonomy-sync.cjs')
 const { importProducts } = require('./products.cjs')
 const { syncProductChanges } = require('./product-sync.cjs')
-const { listMediaLibrary, syncMediaUploads } = require('./media.cjs')
+const { importMediaLibrary, listMediaLibrary, syncMediaChanges, syncMediaDeletions, syncMediaUploads } = require('./media.cjs')
 const productFields = require('./product-fields.cjs')
 
 const development = !app.isPackaged && process.argv.includes('--dev')
@@ -27,7 +28,11 @@ if (!app.isPackaged && process.env.CATALOGDESK_V2_TEST_USER_DATA) {
   app.setPath('userData', process.env.CATALOGDESK_V2_TEST_USER_DATA)
 }
 
-protocol.registerSchemesAsPrivileged([{ scheme: 'catalog', privileges: { standard: true, secure: true, supportFetchAPI: true, corsEnabled: true } }])
+protocol.registerSchemesAsPrivileged([
+  { scheme: 'catalog', privileges: { standard: true, secure: true, supportFetchAPI: true, corsEnabled: true } },
+  // Thumbnails of the media library, cached on disk so they also show offline.
+  { scheme: 'catalog-media', privileges: { standard: true, secure: true } },
+])
 
 function validateSender(event) {
   if (!mainWindow || event.sender.id !== mainWindow.webContents.id || event.senderFrame !== mainWindow.webContents.mainFrame)
@@ -51,6 +56,15 @@ function authorize(event, envelope, permission) {
     if (error.message.startsWith('Sitzung')) event.sender.send('catalog:v2:auth-expired')
     throw error
   }
+}
+
+// Image picker and uploads are used from the product editor and the media library page.
+function authorizeAny(event, envelope, permissions) {
+  let failure
+  for (const permission of permissions) {
+    try { return authorize(event, envelope, permission) } catch (error) { failure = error; if (error.message.startsWith('Sitzung')) break }
+  }
+  throw failure
 }
 
 function createWindow() {
@@ -230,6 +244,7 @@ app.whenReady().then(async () => {
   }
   // Images picked from the computer wait here (outside the database) until the shop has them.
   const uploadDirectory = path.join(app.getPath('userData'), 'media-uploads')
+  const thumbDirectory = path.join(app.getPath('userData'), 'media-cache')
   const uploadPath = (file) => {
     if (!/^[a-f0-9-]{36}\.(jpg|png|gif|webp)$/.test(file)) throw new Error('Ungueltige Upload-Datei.')
     return path.join(uploadDirectory, file)
@@ -239,10 +254,21 @@ app.whenReady().then(async () => {
       void audit(user, { category: 'sync', action: 'sync.media', shopUrl, outcome: change.outcome === 'success' ? 'success' : 'failure', targetType: 'media', targetId: change.mediaId ? String(change.mediaId) : null, targetLabel: change.filename,
         summary: change.outcome === 'success' ? `Bild „${change.filename}“ in die Mediathek hochgeladen` : `Bild „${change.filename}“ nicht hochgeladen`, details: change.error ? { error: change.error } : undefined })
   }
+  const mediaLabels = { title: 'Titel', alt: 'Alt-Text', caption: 'Beschriftung', description: 'Beschreibung' }
+  function auditMediaChanges(changes, user, shopUrl) {
+    if (!changes.length) return
+    const synced = changes.filter((change) => change.outcome === 'success').length
+    const conflicts = changes.filter((change) => change.outcome === 'conflict').length
+    const rejected = changes.length - synced - conflicts
+    void audit(user, { category: 'sync', action: 'sync.media_changes', shopUrl, outcome: synced || conflicts ? 'success' : 'failure',
+      summary: `${synced} Mediathek-${synced === 1 ? 'Aenderung' : 'Aenderungen'} an WordPress uebertragen${conflicts ? `, ${conflicts} mit Konflikt` : ''}${rejected ? `, ${rejected} abgelehnt` : ''}`,
+      details: { transfers: changes.map((change) => ({ image: change.name, id: change.mediaId, fields: change.fields.map((field) => mediaLabels[field] ?? field).join(', '),
+        result: { success: 'uebertragen', conflict: `Konflikt: ${(change.conflicts ?? []).map((field) => mediaLabels[field] ?? field).join(', ')} in WordPress geaendert`, failure: `abgelehnt: ${change.error}` }[change.outcome] })) } })
+  }
   const emptyProductSync = async (shopUrl) => ({ synced: 0, failed: 0, conflicts: 0, offline: true, changes: [], counts: await databaseCall('productChangeCounts', { shopUrl }) })
   // Sends queued taxonomy edits, then product edits (products may reference new terms).
   // `exclude…` skips changes the caller records itself (the edit that triggered this run).
-  async function runShopSync({ notify = true, user = null, excludeTerm = () => false, excludeProduct = () => false } = {}) {
+  async function runShopSync({ notify = true, user = null, excludeTerm = () => false, excludeProduct = () => false, excludeMedia = () => false } = {}) {
     if (shopOperationRunning || !database) return null
     const connection = await shopStore.load().catch(() => null)
     if (!connection) return null
@@ -255,11 +281,25 @@ app.whenReady().then(async () => {
       const media = result.offline ? { offline: true, changes: [] } : await syncMediaUploads(connection, databaseCall, shopFetch, (file) => readFile(uploadPath(file)))
       auditMediaSync(media.changes, user, connection.url)
       for (const change of media.changes) if (change.outcome === 'success') void rm(uploadPath(change.file), { force: true }).catch(() => {})
-      const products = result.offline || media.offline ? await emptyProductSync(connection.url) : await syncProductChanges(connection, databaseCall, shopFetch)
+      const mediaEdits = media.offline ? { offline: true, changes: [] } : await syncMediaChanges(connection, databaseCall, shopFetch)
+      auditMediaChanges(mediaEdits.changes.filter((change) => !excludeMedia(change)), user, connection.url)
+      const products = result.offline || media.offline || mediaEdits.offline ? await emptyProductSync(connection.url) : await syncProductChanges(connection, databaseCall, shopFetch)
       auditProductSync(products.changes.filter((change) => !excludeProduct(change)), user, connection.url)
+      // Deletions last: the products that used an image must have it removed in the shop first.
+      const deletions = products.offline ? { offline: true, changes: [] } : await syncMediaDeletions(connection, databaseCall, shopFetch)
+      for (const change of deletions.changes) {
+        const summary = { success: change.trashed ? `Bild „${change.name}“ in den WordPress-Papierkorb verschoben` : `Bild „${change.name}“ in WordPress endgueltig geloescht`,
+          held: `Loeschen von „${change.name}“ angehalten: in WordPress noch verwendet`, failure: `Bild „${change.name}“ nicht geloescht` }[change.outcome]
+        const details = change.outcome === 'held' ? { places: change.places.map((place) => `${place.kind}: ${place.title} (${place.where})`) }
+          : change.outcome === 'success' ? { check: change.forced ? 'Uebersprungen (trotzdem loeschen)' : change.unchecked.length ? `Nicht pruefbar: ${change.unchecked.join(', ')}` : 'Keine Verwendung gefunden', trash: change.trashed ? 'Ja, wiederherstellbar' : 'Nein (MEDIA_TRASH aus)' }
+            : { error: change.error }
+        void audit(user, { category: 'sync', action: 'sync.media_delete', shopUrl: connection.url, outcome: change.outcome === 'failure' ? 'failure' : 'success', targetType: 'media', targetId: String(change.mediaId), targetLabel: change.name, summary, details })
+        if (change.thumbUrl) void rm(path.join(thumbDirectory, createHash('sha256').update(`${connection.url}\u0000${change.thumbUrl}`).digest('hex')), { force: true }).catch(() => {})
+      }
       if (notify && (result.synced || result.failed)) mainWindow?.webContents.send('catalog:v2:taxonomies-changed')
       if (notify && (products.changes.length || media.changes.length)) mainWindow?.webContents.send('catalog:v2:products-changed')
-      return { ...result, products }
+      if (notify && (media.changes.length || mediaEdits.changes.length || deletions.changes.length)) mainWindow?.webContents.send('catalog:v2:media-changed')
+      return { ...result, products, media: mediaEdits, deletions }
     } finally { shopOperationRunning = false }
   }
   const runTaxonomySync = ({ exclude, ...options } = {}) => runShopSync({ ...options, excludeTerm: exclude })
@@ -586,7 +626,7 @@ app.whenReady().then(async () => {
   // Media library of the shop for the image picker (online only).
   ipcMain.handle('catalog:v2:media-library', async (event, envelope) => {
     try {
-      const { payload } = authorize(event, envelope, 'products')
+      const { payload } = authorizeAny(event, envelope, ['products', 'media'])
       const connection = await shopStore.load()
       if (!connection) return { ok: false, error: 'Keine Shopverbindung gespeichert. Bitte zuerst unter Shopverbindung einrichten.' }
       const search = typeof payload?.search === 'string' ? payload.search.trim().slice(0, 200) : ''
@@ -599,7 +639,7 @@ app.whenReady().then(async () => {
   })
   ipcMain.handle('catalog:v2:media-pending', async (event, envelope) => {
     try {
-      authorize(event, envelope, 'products')
+      authorizeAny(event, envelope, ['products', 'media'])
       const shop = await shopStore.summary().catch(() => null)
       return { ok: true, value: shop ? await databaseCall('listMediaUploads', { shopUrl: shop.url }) : [] }
     } catch (error) {
@@ -614,7 +654,7 @@ app.whenReady().then(async () => {
   ipcMain.handle('catalog:v2:media-upload', async (event, envelope) => {
     let user = null
     try {
-      const authorized = authorize(event, envelope, 'products')
+      const authorized = authorizeAny(event, envelope, ['products', 'media'])
       user = authorized.user
       const payload = authorized.payload
       const connection = await shopStore.load()
@@ -640,6 +680,161 @@ app.whenReady().then(async () => {
     } catch (error) {
       if (user) void audit(user, { category: 'catalog', action: 'catalog.media_upload', summary: 'Bild nicht vorgemerkt', outcome: 'failure', details: { error: error.message?.slice(0, 300) ?? null } })
       return { ok: false, error: productError(error, 'Bild konnte nicht vorgemerkt werden.') }
+    }
+  })
+  const mediaError = (error, fallback) => /^(Sitzung|Fuer diese|Medium|Keine Shopverbindung)/.test(error.message ?? '') ? error.message.replace(/^Medium: /, '') : fallback
+  // Local media library (works offline): page with filters, and the image picker.
+  ipcMain.handle('catalog:v2:media-list', async (event, envelope) => {
+    try {
+      const { payload } = authorizeAny(event, envelope, ['media', 'products'])
+      const shop = await shopStore.summary().catch(() => null)
+      if (!shop) return { ok: true, value: { items: [], total: 0, page: 0, pageSize: 60, imported: false, importedAt: null, syncedAt: null, lastModified: null, count: 0, changeCounts: { pending: 0, failed: 0, conflict: 0 }, canEdit: false } }
+      const query = payload && typeof payload === 'object' ? payload : {}
+      const value = await databaseCall('listMedia', { shopUrl: shop.url, query: query.query ?? '', filter: query.filter ?? 'all', page: query.page ?? 0, pageSize: query.pageSize ?? 60 })
+      return { ok: true, value: { ...value, canEdit: Boolean(shop.wpUser) } }
+    } catch (error) {
+      return { ok: false, error: mediaError(error, 'Mediathek konnte nicht geladen werden.') }
+    }
+  })
+  ipcMain.handle('catalog:v2:media-detail', async (event, envelope) => {
+    try {
+      const { payload } = authorize(event, envelope, 'media')
+      return { ok: true, value: await databaseCall('mediaDetail', { shopUrl: await currentShopUrl(), mediaId: payload?.mediaId }) }
+    } catch (error) {
+      return { ok: false, error: mediaError(error, 'Bild konnte nicht geladen werden.') }
+    }
+  })
+  // Reads the media library from WordPress: everything the first time, afterwards only changes (and deletions).
+  ipcMain.handle('catalog:v2:media-sync', async (event, envelope) => {
+    let acquired = false
+    let user = null
+    let shopUrl = null
+    try {
+      const authorized = authorize(event, envelope, 'media')
+      user = authorized.user
+      if (shopOperationRunning) return { ok: false, error: 'Eine Shopaktion laeuft bereits.' }
+      shopOperationRunning = true
+      acquired = true
+      const connection = await shopStore.load()
+      if (!connection) return { ok: false, error: 'Keine Shopverbindung gespeichert. Bitte zuerst unter Shopverbindung einrichten.' }
+      shopUrl = connection.url
+      const state = await databaseCall('mediaLibraryState', { shopUrl })
+      // A full read when asked for, never imported yet, or read without application password before (texts not editable).
+      const full = authorized.payload?.full === true || !state.imported || Boolean(connection.wpAppPassword && state.readOnly)
+      const result = await importMediaLibrary(connection, shopFetch, { since: full ? null : state.lastModified, onProgress: (progress) => { if (!event.sender.isDestroyed()) event.sender.send('catalog:v2:media-progress', progress) } })
+      authorize(event, envelope, 'media')
+      const stored = await databaseCall('storeMediaLibrary', { shopUrl, syncedAt: new Date().toISOString(), items: result.items, ids: result.ids })
+      void audit(user, { category: 'sync', action: full ? 'sync.media_import' : 'sync.media_refresh', shopUrl, targetType: 'shop', targetLabel: shopUrl,
+        summary: full ? `Mediathek importiert: ${stored.count} Bilder` : `Mediathek abgeglichen: ${result.items.length} geaendert, ${stored.removed} entfernt`, details: { images: stored.count, changed: result.items.length, removed: stored.removed, editable: result.editable ? 'Ja' : 'Nein (kein Anwendungspasswort)' } })
+      acquired = false
+      shopOperationRunning = false
+      // Queued edits go out right after reading.
+      const sync = await runShopSync({ notify: false, user })
+      return { ok: true, value: { ...stored, changed: result.items.length, full, sync: sync?.media ?? null } }
+    } catch (error) {
+      const message = error instanceof WooError ? error.message : mediaError(error, 'Mediathek konnte nicht abgeglichen werden.')
+      if (user && acquired) void audit(user, { category: 'sync', action: 'sync.media_refresh', summary: 'Mediathek-Abgleich fehlgeschlagen', outcome: 'failure', shopUrl, details: { error: message } })
+      return { ok: false, error: message }
+    } finally {
+      if (acquired) shopOperationRunning = false
+    }
+  })
+  ipcMain.handle('catalog:v2:media-change', async (event, envelope) => {
+    let user = null
+    const request = envelope?.payload && typeof envelope.payload === 'object' ? envelope.payload : {}
+    try {
+      user = authorize(event, envelope, 'media').user
+      const shopUrl = await currentShopUrl()
+      const value = await databaseCall('queueMediaChange', { shopUrl, mediaId: request.mediaId, values: request.values ?? {} })
+      const own = (change) => change.mediaId === value.mediaId
+      const sync = value.queued ? await runShopSync({ notify: false, user, excludeMedia: own }) : null
+      const result = sync?.media.changes.find(own)
+      const changes = Object.keys(value.after).filter((field) => value.before[field] !== value.after[field]).map((field) => ({ field: value.labels[field], before: value.before[field] || null, after: value.after[field] || null }))
+      if (changes.length) void audit(user, {
+        category: 'catalog', action: 'catalog.media_update', shopUrl, targetType: 'media', targetId: String(value.mediaId), targetLabel: value.name,
+        summary: `Bild „${value.name}“ geaendert`, outcome: result?.outcome === 'failure' ? 'failure' : 'success',
+        details: { changes, shop: !value.queued ? 'Entspricht wieder dem Stand in WordPress' : !result ? 'Lokal vorgemerkt, wird spaeter uebertragen'
+          : { success: 'In WordPress gespeichert', conflict: `Konflikt: ${(result.conflicts ?? []).map((field) => value.labels[field] ?? field).join(', ')} wurde in WordPress geaendert`, failure: `Von WordPress abgelehnt: ${result.error}` }[result.outcome] },
+      })
+      return { ok: true, value: { queued: value.queued, outcome: result?.outcome ?? null, conflicts: result?.conflicts ?? [], error: result?.error ?? null } }
+    } catch (error) {
+      const message = mediaError(error, 'Aenderung konnte nicht gespeichert werden. Eingaben pruefen.')
+      if (user) void audit(user, { category: 'catalog', action: 'catalog.media_update', summary: 'Bildaenderung nicht gespeichert', outcome: 'failure', targetType: 'media', targetId: Number.isSafeInteger(request.mediaId) ? String(request.mediaId) : null, details: { error: message } })
+      return { ok: false, error: message }
+    }
+  })
+  ipcMain.handle('catalog:v2:media-discard', async (event, envelope) => {
+    try {
+      const { user, payload } = authorize(event, envelope, 'media')
+      const shopUrl = await currentShopUrl()
+      const value = await databaseCall('discardMediaChange', { shopUrl, mediaId: payload?.mediaId })
+      void audit(user, { category: 'catalog', action: 'catalog.media_discard', shopUrl, targetType: 'media', targetId: String(payload.mediaId), targetLabel: value.name,
+        summary: `Vorgemerkte Aenderung an Bild „${value.name}“ verworfen`, details: { fields: value.fields.map((field) => mediaLabels[field] ?? field).join(', ') } })
+      return { ok: true, value: true }
+    } catch (error) {
+      return { ok: false, error: mediaError(error, 'Aenderung konnte nicht verworfen werden.') }
+    }
+  })
+  ipcMain.handle('catalog:v2:media-resolve', async (event, envelope) => {
+    try {
+      const { user, payload } = authorize(event, envelope, 'media')
+      const shopUrl = await currentShopUrl()
+      const value = await databaseCall('resolveMediaConflict', { shopUrl, mediaId: payload?.mediaId, resolutions: payload?.resolutions ?? {} })
+      const name = payload?.name ? String(payload.name).slice(0, 200) : `#${payload?.mediaId}`
+      void audit(user, { category: 'catalog', action: 'catalog.media_conflict', shopUrl, targetType: 'media', targetId: String(payload.mediaId), targetLabel: name, summary: `Konflikt bei Bild „${name}“ geloest`,
+        details: { resolutions: [...value.kept.map((field) => ({ field: mediaLabels[field], decision: 'Meine Aenderung behalten', shopValue: value.remote[field] })), ...value.dropped.map((field) => ({ field: mediaLabels[field], decision: 'WordPress-Wert uebernommen', shopValue: value.remote[field] }))] } })
+      await runShopSync({ notify: false, user })
+      return { ok: true, value: true }
+    } catch (error) {
+      return { ok: false, error: mediaError(error, 'Konflikt konnte nicht geloest werden.') }
+    }
+  })
+  ipcMain.handle('catalog:v2:media-delete', async (event, envelope) => {
+    let user = null
+    const mediaId = envelope?.payload?.mediaId
+    try {
+      user = authorize(event, envelope, 'media').user
+      const connection = await shopStore.load()
+      if (!connection) return { ok: false, error: 'Keine Shopverbindung gespeichert. Bitte zuerst unter Shopverbindung einrichten.' }
+      if (Number(mediaId) > 0 && !connection.wpAppPassword) return { ok: false, error: 'Zum Loeschen unter Shopverbindung einen WordPress-Benutzer mit Anwendungspasswort hinterlegen.' }
+      const value = await databaseCall('deleteMedia', { shopUrl: connection.url, mediaId })
+      if (value.file) await rm(uploadPath(value.file), { force: true }).catch(() => {})
+      void audit(user, { category: 'catalog', action: 'catalog.media_delete', shopUrl: connection.url, targetType: 'media', targetId: String(mediaId), targetLabel: value.name,
+        summary: value.queued ? `Bild „${value.name}“ zum Loeschen vorgemerkt` : `Vorgemerkten Upload „${value.name}“ verworfen`,
+        details: { removedFrom: value.removedFrom.map((entry) => entry.name).join(', ') || 'keinem Produkt' } })
+      const sync = await runShopSync({ notify: false, user })
+      const deleted = sync?.deletions?.changes.find((change) => change.mediaId === mediaId)
+      return { ok: true, value: { queued: value.queued, removedFrom: value.removedFrom, outcome: !value.queued ? 'success' : deleted?.outcome ?? null, trashed: deleted?.trashed ?? null, places: deleted?.places ?? [], error: deleted?.error ?? null } }
+    } catch (error) {
+      const message = mediaError(error, 'Bild konnte nicht geloescht werden.')
+      if (user) void audit(user, { category: 'catalog', action: 'catalog.media_delete', summary: 'Bild nicht geloescht', outcome: 'failure', targetType: 'media', targetId: Number.isSafeInteger(mediaId) ? String(mediaId) : null, details: { error: message } })
+      return { ok: false, error: message }
+    }
+  })
+  // A held deletion: the user saw where WordPress still uses the image and deletes it anyway.
+  ipcMain.handle('catalog:v2:media-force-delete', async (event, envelope) => {
+    try {
+      const { user, payload } = authorize(event, envelope, 'media')
+      const shopUrl = await currentShopUrl()
+      const value = await databaseCall('forceMediaDeletion', { shopUrl, mediaId: payload?.mediaId })
+      void audit(user, { category: 'catalog', action: 'catalog.media_delete_force', shopUrl, targetType: 'media', targetId: String(payload.mediaId), targetLabel: value.name,
+        summary: `Bild „${value.name}“ trotz Verwendung zum Loeschen freigegeben`, details: { places: value.places.map((place) => `${place.kind}: ${place.title} (${place.where})`) } })
+      const sync = await runShopSync({ notify: false, user })
+      const deleted = sync?.deletions?.changes.find((change) => change.mediaId === payload.mediaId)
+      return { ok: true, value: { outcome: deleted?.outcome ?? null, trashed: deleted?.trashed ?? null, error: deleted?.error ?? null } }
+    } catch (error) {
+      return { ok: false, error: mediaError(error, 'Bild konnte nicht geloescht werden.') }
+    }
+  })
+  ipcMain.handle('catalog:v2:media-retry', async (event, envelope) => {
+    try {
+      const { user } = authorize(event, envelope, 'media')
+      await databaseCall('retryMediaChanges', { shopUrl: await currentShopUrl() })
+      const sync = await runShopSync({ notify: false, user })
+      if (!sync) return { ok: false, error: 'Eine Shopaktion laeuft bereits. Bitte gleich erneut versuchen.' }
+      return { ok: true, value: sync.media }
+    } catch (error) {
+      return { ok: false, error: mediaError(error, 'Synchronisation fehlgeschlagen.') }
     }
   })
   ipcMain.handle('catalog:v2:products-editor-options', async (event, envelope) => {
@@ -668,7 +863,7 @@ app.whenReady().then(async () => {
         if (method === 'saveUser') {
           const after = (await database.request('listUsers')).find((entry) => entry.id === value)
           const labels = { firstName: 'Vorname', lastName: 'Name', email: 'E-Mail', username: 'Benutzername', role: 'Rolle', permissions: 'Berechtigungen' }
-          const sections = { dashboard: 'Dashboard', products: 'Produkte', orders: 'Bestellungen', customers: 'Kunden', settings: 'Einstellungen', users: 'Benutzer', shop: 'Shopverbindung', taxonomies: 'Taxonomien', sync: 'Synchronisation', history: 'Historie' }
+          const sections = { dashboard: 'Dashboard', products: 'Produkte', media: 'Mediathek', plugins: 'Plugins', orders: 'Bestellungen', customers: 'Kunden', settings: 'Einstellungen', users: 'Benutzer', shop: 'Shopverbindung', taxonomies: 'Taxonomien', sync: 'Synchronisation', history: 'Historie' }
           const readable = (entry) => entry && { ...entry, role: entry.role === 'admin' ? 'Admin' : 'Mitarbeiter', permissions: entry.role === 'admin' ? 'Alle Bereiche' : entry.permissions.map((key) => sections[key] ?? key).join(', ') || 'Keine Bereiche' }
           void audit(user, { category: 'users', action: before ? 'users.update' : 'users.create', summary: `Benutzer „${after.firstName} ${after.lastName}“ ${before ? 'geaendert' : 'angelegt'}`,
             targetType: 'user', targetId: value, targetLabel: after.username,
@@ -688,6 +883,30 @@ app.whenReady().then(async () => {
       }
     })
   }
+  // catalog-media://thumb/<id>: thumbnail of a media library item of the current shop. Loaded once from the
+  // shop and kept on disk, so the media library and product list also show images offline.
+  protocol.handle('catalog-media', async (request) => {
+    try {
+      const match = /^catalog-media:\/\/thumb\/(\d{1,12})$/.exec(request.url.replace(/\/$/, ''))
+      const shop = await shopStore.summary().catch(() => null)
+      if (request.method !== 'GET' || !match || !shop) return new Response('Not found', { status: 404 })
+      const thumbUrl = await databaseCall('mediaThumb', { shopUrl: shop.url, mediaId: Number(match[1]) })
+      if (!thumbUrl || !/^https:\/\//.test(thumbUrl)) return new Response('Not found', { status: 404 })
+      const filename = path.join(thumbDirectory, createHash('sha256').update(`${shop.url}\u0000${thumbUrl}`).digest('hex'))
+      const headers = { 'Content-Type': 'application/octet-stream', 'Cache-Control': 'no-store' }
+      try { return new Response(await readFile(filename), { headers }) } catch { /* not cached yet */ }
+      const response = await net.fetch(thumbUrl, { redirect: 'follow', credentials: 'omit' })
+      const type = response.headers.get('content-type') ?? ''
+      if (!response.ok || !type.startsWith('image/')) return new Response('Not found', { status: 404 })
+      const data = Buffer.from(await response.arrayBuffer())
+      if (data.length > 8 * 1024 * 1024) return new Response('Too large', { status: 404 })
+      await mkdir(thumbDirectory, { recursive: true, mode: 0o700 })
+      await writeFile(filename, data, { mode: 0o600 }).catch(() => {})
+      return new Response(data, { headers: { ...headers, 'Content-Type': type } })
+    } catch {
+      return new Response('Not found', { status: 404 })
+    }
+  })
   if (!development) {
     protocol.handle('catalog', (request) => {
       try {

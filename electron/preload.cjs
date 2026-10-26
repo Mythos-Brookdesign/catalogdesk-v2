@@ -7,6 +7,14 @@ const taxonomyChangeListeners = new Set()
 const auditListeners = new Set()
 const productProgressListeners = new Set()
 const productChangeListeners = new Set()
+const mediaChangeListeners = new Set()
+const mediaProgressListeners = new Set()
+ipcRenderer.on('catalog:v2:media-changed', () => {
+  for (const listener of mediaChangeListeners) listener()
+})
+ipcRenderer.on('catalog:v2:media-progress', (_event, progress) => {
+  for (const listener of mediaProgressListeners) listener(progress)
+})
 ipcRenderer.on('catalog:v2:products-changed', () => {
   for (const listener of productChangeListeners) listener()
 })
@@ -82,6 +90,17 @@ contextBridge.exposeInMainWorld('catalogDesk', {
   listMediaLibrary: (query) => authorized('catalog:v2:media-library', query),
   listPendingMedia: () => authorized('catalog:v2:media-pending'),
   uploadMedia: (file) => authorized('catalog:v2:media-upload', file),
+  listMedia: (query) => authorized('catalog:v2:media-list', query),
+  mediaDetail: (mediaId) => authorized('catalog:v2:media-detail', { mediaId }),
+  syncMediaLibrary: (full = false) => authorized('catalog:v2:media-sync', { full }),
+  changeMedia: (mediaId, values) => authorized('catalog:v2:media-change', { mediaId, values }),
+  discardMediaChange: (mediaId) => authorized('catalog:v2:media-discard', { mediaId }),
+  resolveMediaConflict: (mediaId, name, resolutions) => authorized('catalog:v2:media-resolve', { mediaId, name, resolutions }),
+  retryMediaChanges: () => authorized('catalog:v2:media-retry'),
+  deleteMedia: (mediaId) => authorized('catalog:v2:media-delete', { mediaId }),
+  forceDeleteMedia: (mediaId) => authorized('catalog:v2:media-force-delete', { mediaId }),
+  onMediaChanged: (listener) => { mediaChangeListeners.add(listener); return () => mediaChangeListeners.delete(listener) },
+  onMediaProgress: (listener) => { mediaProgressListeners.add(listener); return () => mediaProgressListeners.delete(listener) },
   onAuditAppended: (listener) => { auditListeners.add(listener); return () => auditListeners.delete(listener) },
   onTaxonomyImportProgress: (listener) => { taxonomyProgressListeners.add(listener); return () => taxonomyProgressListeners.delete(listener) },
 })

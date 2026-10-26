@@ -4,6 +4,7 @@ import { productFieldLabels, productPrice, productFieldValue, productStatusLabel
 import type { ProductChangeResult, ProductEditorOptions, ProductImportProgress, ProductTermField, TaxonomyTermOption, WorkspaceSummary } from '../../types/desktop'
 import { ProductEditor, type NewTerm } from './ProductEditor'
 import { toProductImage } from './media'
+import { CachedImage } from './ProductImages'
 import { useNotify } from '../../components/notifications/notifications'
 import './ProductsPage.css'
 
@@ -21,8 +22,8 @@ const pageSize = 50
 // Product image (or variation image) in the list; queued edits are already merged into the payload.
 function ProductThumb({ product }: { product: ProductSummary }) {
   const image = toProductImage(product.parentId ? product.payload.image : Array.isArray(product.payload.images) ? product.payload.images[0] : null)
-  if (!image?.src) return product.parentId ? null : <span className="product-thumb empty"><Boxes size={15} /></span>
-  return <span className="product-thumb"><img src={image.src} alt="" loading="lazy" decoding="async" /></span>
+  if (!image || image.id < 0 || !image.src) return product.parentId ? null : <span className="product-thumb empty"><Boxes size={15} /></span>
+  return <span className="product-thumb"><CachedImage id={image.id} fallback={image.src} /></span>
 }
 
 export function ProductsPage({ desktop, canCreateTerms = false }: { desktop?: DesktopApi; canCreateTerms?: boolean }) {
